@@ -22,6 +22,17 @@ FORK=/root/vllm-unified-pool-phase4
 SP=$(python3 -c "import site;print(site.getsitepackages()[0])")
 echo "[setup] site-packages: $SP"
 
+# 0. ensure torch 2.10.0 (the fork's pin + the vLLM 0.17.1 kernel ABI). PyTorch
+#    wheels bundle their own CUDA runtime, so this works on any base image as
+#    long as the host driver is recent enough (L4 driver 580 handles cu12.9).
+TORCH_OK=$(python3 -c "import torch,sys;sys.stdout.write('yes' if torch.__version__.startswith('2.10.0') else 'no')" 2>/dev/null || echo no)
+if [ "$TORCH_OK" != "yes" ]; then
+  echo "[setup] installing torch==2.10.0 (cu129; falling back to cu128)..."
+  pip install --index-url https://download.pytorch.org/whl/cu129 "torch==2.10.0" \
+    || pip install --index-url https://download.pytorch.org/whl/cu128 "torch==2.10.0"
+fi
+python3 -c "import torch;print('[setup] torch', torch.__version__, 'cuda', torch.version.cuda, 'avail', torch.cuda.is_available())"
+
 # 1. git + clone (idempotent)
 if ! command -v git >/dev/null; then
   apt-get update -qq
