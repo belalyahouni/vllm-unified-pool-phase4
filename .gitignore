@@ -1,0 +1,7 @@
+venv*/
+__pycache__/
+*.pyc
+.env
+vllm-old/
+# Per-step pool-composition trace dumps are too large for git; regenerable from runs.
+**/*_trace*.log
