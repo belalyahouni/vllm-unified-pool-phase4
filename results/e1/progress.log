@@ -1,0 +1,82 @@
+[19:47:25] ===== E1 FULL START (M=67) =====
+[19:47:25] CELL static64 / KV-heavy
+[19:48:29]   boot ready (33x2s)
+[20:01:46]   static64 kv-cold exit 0
+[20:13:54]   static64 kv-warm exit 0
+[20:13:59] CELL ours48 / KV-heavy
+[20:15:07]   boot ready (35x2s)
+[20:32:51]   ours48 kv-cold exit 0
+[20:33:06]   ours48 kv-warm exit 0
+[20:33:11] CELL ours8 / KV-heavy
+[20:34:13]   boot ready (32x2s)
+[20:50:50] ===== E1 FULL2 START (M=67; +ours32/ours64) =====
+[20:50:50] CELL ours64 / KV-heavy
+[20:51:57]   boot ready (34x2s)
+[20:57:14] ===== E1 FULL2 START (M=67; +ours32/ours64) =====
+[20:57:14] CELL ours64 / KV-heavy
+[20:58:16]   boot ready (32x2s)
+[21:15:57]   ours64 kv-cold exit 0
+[21:16:12]   ours64 kv-warm exit 0
+[21:16:17] CELL ours32 / KV-heavy
+[21:17:19]   boot ready (32x2s)
+[21:34:52]   ours32 kv-cold exit 0
+[21:35:06]   ours32 kv-warm exit 0
+[21:35:11] CELL ours8 / KV-heavy
+[21:36:14]   boot ready (32x2s)
+[21:53:46]   ours8 kv-cold exit 0
+[21:54:00]   ours8 kv-warm exit 0
+[21:54:05] SKIP ours48 / KV-heavy (done)
+[21:54:05] SKIP static64 / KV-heavy (done)
+[21:54:05] CELL static48 / KV-heavy
+[21:55:07]   boot ready (32x2s)
+[22:08:25]   static48 kv-cold exit 0
+[22:13:53]   static48 kv-warm exit 0
+[22:13:58] CELL static32 / KV-heavy
+[22:15:00]   boot ready (32x2s)
+[22:28:32]   static32 kv-cold exit 0
+[22:28:45]   static32 kv-warm exit 0
+[22:28:50] CELL vanilla / KV-heavy
+[22:29:38]   boot ready (25x2s)
+[22:39:32]   vanilla kv-cold exit 0
+[22:39:44]   vanilla kv-warm exit 0
+[22:39:46] CELL ours64 / expert-heavy
+[22:40:50]   boot ready (33x2s)
+[22:42:00]   ours64 exp-seed1 exit 0
+[22:43:11]   ours64 exp-seed2 exit 0
+[22:44:20]   ours64 exp-seed3 exit 0
+[22:44:25] CELL ours32 / expert-heavy
+[22:45:28]   boot ready (32x2s)
+[22:46:39]   ours32 exp-seed1 exit 0
+[22:47:49]   ours32 exp-seed2 exit 0
+[22:48:58]   ours32 exp-seed3 exit 0
+[22:49:03] CELL ours8 / expert-heavy
+[22:50:03]   boot ready (31x2s)
+[22:51:14]   ours8 exp-seed1 exit 0
+[22:52:24]   ours8 exp-seed2 exit 0
+[22:53:32]   ours8 exp-seed3 exit 0
+[22:53:37] CELL ours48 / expert-heavy
+[22:54:40]   boot ready (32x2s)
+[22:55:50]   ours48 exp-seed1 exit 0
+[22:57:00]   ours48 exp-seed2 exit 0
+[22:58:08]   ours48 exp-seed3 exit 0
+[22:58:13] CELL static32 / expert-heavy
+[22:59:14]   boot ready (31x2s)
+[23:01:08]   static32 exp-seed1 exit 0
+[23:03:00]   static32 exp-seed2 exit 0
+[23:04:53]   static32 exp-seed3 exit 0
+[23:04:58] CELL static48 / expert-heavy
+[23:06:00]   boot ready (32x2s)
+[23:07:24]   static48 exp-seed1 exit 0
+[23:08:44]   static48 exp-seed2 exit 0
+[23:10:06]   static48 exp-seed3 exit 0
+[23:10:11] CELL static64 / expert-heavy
+[23:11:14]   boot ready (32x2s)
+[23:12:28]   static64 exp-seed1 exit 0
+[23:13:40]   static64 exp-seed2 exit 0
+[23:14:52]   static64 exp-seed3 exit 0
+[23:14:57] CELL vanilla / expert-heavy
+[23:15:46]   boot ready (25x2s)
+[23:16:43]   vanilla exp-seed1 exit 0
+[23:17:38]   vanilla exp-seed2 exit 0
+[23:18:33]   vanilla exp-seed3 exit 0
+[23:18:35] ===== E1 FULL2 DONE =====

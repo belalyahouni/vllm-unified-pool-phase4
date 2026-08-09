@@ -5,3 +5,5 @@ __pycache__/
 vllm-old/
 # Per-step pool-composition trace dumps are too large for git; regenerable from runs.
 **/*_trace*.log
+# Raw trace boot-logs (100s of MB, over GitHub's 100MB limit); kept locally + on pod /workspace.
+results/**/traces/

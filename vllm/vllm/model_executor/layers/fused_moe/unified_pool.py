@@ -199,6 +199,9 @@ class UnifiedPool:
         self.super_block_at_expert: dict[int, int] = {}
         self.expert_lru: OrderedDict[int, int] = OrderedDict()
         self.pinned_super_blocks: set[int] = set()
+        # DIAGNOSTIC: every expert id the workload has ever routed to this
+        # layer (the genuine footprint), vs what is merely resident.
+        self.ever_activated: set[int] = set()
 
         self.hits = 0
         self.misses = 0
@@ -712,6 +715,12 @@ class UnifiedPoolManager:
         hit_results: list[tuple[int, int]] = []  # (eid, super_block_id)
         miss_eids: list[int] = []
         needed_set = set(needed_expert_ids)
+        layer.ever_activated.update(needed_set)  # DIAGNOSTIC: genuine footprint
+        if _trace_enabled():
+            print(
+                f"UNIFIED NEEDED L{layer.layer_idx} experts={sorted(needed_set)}",
+                flush=True,
+            )
         for eid in needed_expert_ids:
             if layer.has_expert(eid):
                 hit_results.append((eid, layer.super_block_of_expert(eid)))
@@ -957,10 +966,18 @@ class UnifiedPoolManager:
     # KV-side victim selection (no layer of origin).
 
     def _oldest_global_expert(self) -> tuple[int | None, int | None]:
-        """Oldest non-pinned expert super-block across all layers.
+        """Super-block holding the globally-coldest expert (Phase-3 policy).
 
         Returns (super_block_id, step) or (None, None) if every expert
-        super-block is pinned by some layer.
+        super-block is pinned by some layer. A super-block is scored by its
+        *coldest* co-located expert (``min`` over holders), so the target is
+        the slot containing the single least-recently-used expert anywhere.
+        Reclaiming it broadcast-drops whatever experts other layers parked in
+        that slot too — the shared-fate cost of KV being global. This is
+        deliberate: waiting for a slot to be cold in *all* layers (``max``
+        scoring) almost never happens under cross-layer co-location, which
+        starves KV. We evict on coldness and re-load the co-located experts
+        that turn out to still be hot (they miss next forward).
         """
         best_step: int | None = None
         best_s: int | None = None
@@ -975,7 +992,7 @@ class UnifiedPoolManager:
                     holder_steps.append(layer.expert_lru[eid])
             if not holder_steps:
                 continue
-            step = max(holder_steps)
+            step = min(holder_steps)
             if best_step is None or step < best_step:
                 best_step = step
                 best_s = s
@@ -1180,7 +1197,7 @@ class UnifiedPoolManager:
             f"expert_sb {n_expert_ours}/{capacity_sb} ours "
             f"(expert-ours-sb={n_expert_ours}, expert-other-sb={n_expert_other}, "
             f"prefix-pages={n_prefix_pages}, alloc-kv-pages={n_alloc_kv_pages}, "
-            f"pinned-sb={n_pinned_sb})",
+            f"pinned-sb={n_pinned_sb}, ever-activated={len(layer.ever_activated)})",
             flush=True,
         )
 

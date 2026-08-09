@@ -1,0 +1,31 @@
+====================================================================================
+EXPERIMENT 1 (M=67) — KV-heavy (warm reverse pass); TTFT is the signal
+====================================================================================
+config                         med TTFT  mean TTFT   p99 TTFT  hits/16    pool(L0)
+vanilla (no-offload)              206ms      199ms      215ms    16/16          --
+static C=32 (KV-oracle)           319ms      309ms      343ms    16/16          --
+static C=48 (mid)                 278ms     19.94s     49.78s     9/16          --
+static C=64 (expert-oracle)      49.78s     44.88s     52.08s     1/16          --
+ours init=8                       376ms      364ms      397ms    16/16   33e/29act
+ours init=32                      373ms      370ms      459ms    16/16   35e/29act
+ours init=48                      389ms      401ms      531ms    16/16   35e/29act
+ours init=64                      434ms      427ms      606ms    16/16   35e/29act
+
+====================================================================================
+EXPERIMENT 1 (M=67) — expert-heavy (random, seeds 1-3); TPOT is the signal (thrash=high)
+====================================================================================
+config                         med TPOT   med TTFT     tok/s
+vanilla (no-offload)             11.4ms     2903ms      93.6
+static C=32 (KV-oracle)          25.1ms     6409ms      42.2
+static C=48 (mid)                17.9ms     4518ms      60.0
+static C=64 (expert-oracle)      15.6ms     3971ms      68.6
+ours init=8                      14.7ms     3790ms      72.2
+ours init=32                     14.7ms     3776ms      72.2
+ours init=48                     14.7ms     3776ms      72.3
+ours init=64                     14.7ms     3789ms      72.0
+
+Cold-start convergence (ours, KV-heavy): warm median vs init (same endpoint, rising transient)
+  init= 8: warm median 376ms, final pool 33e/29act
+  init=32: warm median 373ms, final pool 35e/29act
+  init=48: warm median 389ms, final pool 35e/29act
+  init=64: warm median 434ms, final pool 35e/29act

@@ -1,0 +1,16 @@
+=== E2 badness (warm+expert); cold shown separately ===
+config     order        cold   kvwarm   hits      exp  eTPOTms   BADNESS    total
+static32   kv2exp       784s       4s  16/16    1848s     24.7     1852s    2636s
+static32   exp2kv       785s       4s  16/16    1852s     24.9     1856s    2641s
+static48   kv2exp       786s     319s   9/16    1307s     17.8     1627s    2413s
+static48   exp2kv       785s     319s   9/16    1309s     17.9     1628s    2413s
+static64   kv2exp       784s     713s   1/16    1144s     15.5     1858s    2642s
+static64   exp2kv       787s     713s   1/16    1145s     15.5     1858s    2644s
+ours48nt   kv2exp       741s       4s  16/16    1097s     14.7     1101s    1842s
+ours48nt   exp2kv       743s       5s  16/16    1086s     14.7     1091s    1834s
+
+=== badness summary (mean of both orders) ===
+  static C=32 (extreme)    1854 s
+  static C=64 (extreme)    1858 s
+  static C=48 (mid)        1627 s
+  ours init=48             1096 s

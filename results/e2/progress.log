@@ -1,0 +1,53 @@
+[03:05:04] ===== E2 QUEUED — waiting for E1 notrace rerun to finish =====
+[03:13:34] ===== E2 START (M=67; Nexp=220) =====
+[03:13:34] RUN static32 / KV->Expert (trace=0, Nexp=220)
+[03:14:34]   boot ready
+[03:27:47]     static32_kv2exp_kvcold.json exit 0
+[03:27:59]     static32_kv2exp_kvwarm.json exit 0
+[03:58:55]     static32_kv2exp_exp.json exit 0
+[03:59:00] RUN static32 / Expert->KV (trace=0, Nexp=220)
+[04:00:02]   boot ready
+[04:31:03]     static32_exp2kv_exp.json exit 0
+[04:44:16]     static32_exp2kv_kvcold.json exit 0
+[04:44:29]     static32_exp2kv_kvwarm.json exit 0
+[04:44:34] RUN static48 / KV->Expert (trace=0, Nexp=220)
+[04:45:37]   boot ready
+[04:58:52]     static48_kv2exp_kvcold.json exit 0
+[05:04:20]     static48_kv2exp_kvwarm.json exit 0
+[05:26:17]     static48_kv2exp_exp.json exit 0
+[05:26:22] RUN static48 / Expert->KV (trace=0, Nexp=220)
+[05:27:26]   boot ready
+[05:49:24]     static48_exp2kv_exp.json exit 0
+[06:02:38]     static48_exp2kv_kvcold.json exit 0
+[06:08:05]     static48_exp2kv_kvwarm.json exit 0
+[06:08:10] RUN static64 / KV->Expert (trace=0, Nexp=220)
+[06:09:12]   boot ready
+[06:22:25]     static64_kv2exp_kvcold.json exit 0
+[06:34:27]     static64_kv2exp_kvwarm.json exit 0
+[06:53:40]     static64_kv2exp_exp.json exit 0
+[06:53:45] RUN static64 / Expert->KV (trace=0, Nexp=220)
+[06:54:47]   boot ready
+[07:14:01]     static64_exp2kv_exp.json exit 0
+[07:27:16]     static64_exp2kv_kvcold.json exit 0
+[07:39:16]     static64_exp2kv_kvwarm.json exit 0
+[07:39:22] RUN ours48nt / KV->Expert (trace=0, Nexp=220)
+[07:40:26]   boot ready
+[07:52:55]     ours48nt_kv2exp_kvcold.json exit 0
+[07:53:07]     ours48nt_kv2exp_kvwarm.json exit 0
+[08:11:32]     ours48nt_kv2exp_exp.json exit 0
+[08:11:37] RUN ours48nt / Expert->KV (trace=0, Nexp=220)
+[08:12:42]   boot ready
+[08:30:56]     ours48nt_exp2kv_exp.json exit 0
+[08:43:28]     ours48nt_exp2kv_kvcold.json exit 0
+[08:43:40]     ours48nt_exp2kv_kvwarm.json exit 0
+[08:43:45] RUN ours48tr / KV->Expert (trace=1, Nexp=60)
+[08:44:50]   boot ready
+[09:02:28]     ours48tr_kv2exp_kvcold.json exit 0
+[09:02:43]     ours48tr_kv2exp_kvwarm.json exit 0
+[09:09:56]     ours48tr_kv2exp_exp.json exit 0
+[09:10:01] RUN ours48tr / Expert->KV (trace=1, Nexp=60)
+[09:11:06]   boot ready
+[09:18:09]     ours48tr_exp2kv_exp.json exit 0
+[09:35:54]     ours48tr_exp2kv_kvcold.json exit 0
+[09:36:10]     ours48tr_exp2kv_kvwarm.json exit 0
+[09:36:15] ===== E2 DONE =====
