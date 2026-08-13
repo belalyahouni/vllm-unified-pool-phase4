@@ -1735,10 +1735,16 @@ class FusedMoE(CustomOp):
         # Rewrite topk_ids so each entry points at the expert's cache
         # slot rather than its global id. That way the kernel reads
         # straight out of the cache buffers.
-        expert_to_slot = self._expert_cache.expert_to_slot
-        remapped_ids = topk_ids.clone()
-        for global_id in needed_expert_ids:
-            remapped_ids[topk_ids == global_id] = expert_to_slot[global_id]
+        #
+        # ensure_experts_loaded above guarantees every needed expert is
+        # resident, so slot_of_expert has a valid (non -1) slot for every
+        # id in topk_ids. A single vectorized gather does the whole remap
+        # in one GPU op — identical result to the previous per-expert
+        # masked-scatter loop, but without its O(needed_experts) kernel
+        # launches and device syncs per layer per forward. This matches
+        # the unified-pool path (super_block_id_at[topk_ids]) so the two
+        # offload paths are compared on equal footing.
+        remapped_ids = self._expert_cache.slot_of_expert[topk_ids]
 
         orig_w13 = self.w13_weight.data
         orig_w2 = self.w2_weight.data

@@ -61,6 +61,23 @@ class ExpertCache:
         # OrderedDict iterates oldest-first, which is what we need for LRU.
         self.lru_order: OrderedDict[int, None] = OrderedDict()
 
+        # GPU-side expert -> cache-slot table, kept in lockstep with
+        # expert_to_slot. The forward path remaps topk_ids with a single
+        # vectorized gather (slot_of_expert[topk_ids]) instead of a Python
+        # loop of per-expert masked scatters. This mirrors the unified-pool
+        # path's super_block_id_at gather so both offload paths pay the same
+        # remap cost — the loop launched O(needed_experts) compare+scatter
+        # kernels (and forced a device sync per boolean-mask index) every
+        # layer every forward, which unfairly taxed this fully-resident path.
+        # -1 marks an expert that is not currently resident; int64 matches
+        # the fused-MoE kernel's int64 cast on expert ids.
+        self.slot_of_expert = torch.full(
+            (self.num_experts,),
+            -1,
+            dtype=torch.int64,
+            device=device,
+        )
+
         # Use a separate stream so CPU->GPU copies don't block the compute stream.
         self.transfer_stream = torch.cuda.Stream(device=device)
 
@@ -77,6 +94,8 @@ class ExpertCache:
             self.cache_w2[slot].copy_(self.cpu_w2[expert_id])
             self.expert_to_slot[expert_id] = slot
             self.lru_order[expert_id] = None
+            # Keep the GPU lookup in lockstep with expert_to_slot.
+            self.slot_of_expert[expert_id] = slot
 
         logger.info(
             "ExpertCache: warmed %d/%d experts on %s "
@@ -127,6 +146,9 @@ class ExpertCache:
             evicted_expert_id = next(eviction_candidates)
             slot = self.expert_to_slot.pop(evicted_expert_id)
             del self.lru_order[evicted_expert_id]
+            # Invalidate the evicted expert in the GPU lookup so a stale
+            # slot can't be gathered before the reassignment below.
+            self.slot_of_expert[evicted_expert_id] = -1
             if _EXPERT_CACHE_TRACE:
                 print(
                     f"ExpertCache: evict expert {evicted_expert_id} "
@@ -136,6 +158,8 @@ class ExpertCache:
 
             self.expert_to_slot[expert_id] = slot
             self.lru_order[expert_id] = None
+            # Mirror the new mapping onto the GPU lookup for the remap gather.
+            self.slot_of_expert[expert_id] = slot
             experts_and_slots_to_copy.append((expert_id, slot))
 
         with torch.cuda.stream(self.transfer_stream):
