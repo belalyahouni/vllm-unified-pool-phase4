@@ -18,6 +18,7 @@ after every step:
 
 import contextlib
 import argparse
+import io
 import os
 import random
 import sys
@@ -551,6 +552,37 @@ def test_bias_changes_expert_vs_prefix_victim():
     assert late_manager._pick_one_kv_victim().block_id == 2
 
 
+def test_trace_reports_bias_outcomes_and_mixed_decisions():
+    block_pool = FakeBlockPool(3)
+    manager = make_manager(block_pool, 1, 1, 2)
+    layer = manager.layers[0]
+    layer.timestamp_bias = -30.0
+    layer.ever_activated.add(0)
+    layer.hits = 3
+    layer.misses = 1
+    layer.assign(1, 0, 100)
+    manager._add_holder(0, 1)
+    add_prefix(manager, block_pool, 2, 102, 80)
+
+    old_trace = up._TRACE_ENABLED
+    up._TRACE_ENABLED = True
+    output = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(output):
+            manager._trace_pre_mutation(layer, [0])
+            manager._pick_one_kv_victim()
+    finally:
+        up._TRACE_ENABLED = old_trace
+
+    trace = output.getvalue()
+    assert "expert-bias=-30.000" in trace
+    assert "hits=3, misses=1, ever-activated=1" in trace
+    assert "UNIFIED DECISION side=kv-alloc" in trace
+    assert "expert-score=70.000 kv-score=80.000 chosen=expert" in trace
+    assert "UNIFIED EVICT sb=1 L0 kind=expert E0" in trace
+    assert "score=70.000 step=0" in trace
+
+
 def test_inactive_page_tokens_are_not_validated():
     pydantic = types.ModuleType("pydantic")
     fields = {}
@@ -614,6 +646,7 @@ def run_deterministic_tests():
     test_dma_failure_removes_new_mappings()
     test_global_expert_uses_coldest_holder()
     test_bias_changes_expert_vs_prefix_victim()
+    test_trace_reports_bias_outcomes_and_mixed_decisions()
     test_inactive_page_tokens_are_not_validated()
 
 

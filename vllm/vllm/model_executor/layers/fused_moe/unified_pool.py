@@ -391,6 +391,8 @@ class UnifiedPoolManager:
         Used on an expert miss where the layer reuses its own cold
         expert's super-block. Other layers keep their mappings.
         """
+        expert_id = layer.expert_of_super_block(super_block_id)
+        score = layer.expert_lru.get(expert_id) if expert_id is not None else None
         evicted = layer.drop(super_block_id)
         if evicted is None:
             return
@@ -399,7 +401,8 @@ class UnifiedPoolManager:
             tier_str = f" tier={tier}" if tier else ""
             print(
                 f"UNIFIED EVICT sb={super_block_id} L{layer.layer_idx} "
-                f"kind=expert E{evicted} cause={cause}{tier_str}",
+                f"kind=expert E{evicted} cause={cause}{tier_str} "
+                f"score={score:.3f} step={self.step}",
                 flush=True,
             )
 
@@ -425,11 +428,14 @@ class UnifiedPoolManager:
                 f"kernel may be reading those bytes — refusing to corrupt. "
                 f"Check async_scheduling is disabled."
             )
+            expert_id = layer.expert_of_super_block(super_block_id)
+            score = layer.expert_lru.get(expert_id) if expert_id is not None else None
             evicted = layer.drop(super_block_id)
             if evicted is not None and _trace_enabled():
                 print(
                     f"UNIFIED EVICT sb={super_block_id} L{layer_idx} "
-                    f"kind=expert E{evicted} cause={cause} tier=kv-broadcast",
+                    f"kind=expert E{evicted} cause={cause} tier=kv-broadcast "
+                    f"score={score:.3f} step={self.step}",
                     flush=True,
                 )
 
@@ -906,7 +912,16 @@ class UnifiedPoolManager:
         if own_expert_eid is not None and best_kv_s is not None:
             assert own_expert_step is not None
             assert best_kv_step is not None
-            if best_kv_step <= own_expert_step:
+            choose_kv = best_kv_step <= own_expert_step
+            if _trace_enabled():
+                print(
+                    f"UNIFIED DECISION side=expert-miss step={self.step} "
+                    f"layer={layer.layer_idx} expert-score={own_expert_step:.3f} "
+                    f"kv-score={best_kv_step:.3f} "
+                    f"chosen={'kv' if choose_kv else 'expert'}",
+                    flush=True,
+                )
+            if choose_kv:
                 self._vacate_kv_super_block(best_kv_s, cause=cause)
                 return best_kv_s, "kv-vacate"
             s2 = layer.super_block_at_expert[own_expert_eid]
@@ -1069,7 +1084,16 @@ class UnifiedPoolManager:
         if oldest_expert_s is not None and oldest_prefix_bid is not None:
             assert oldest_expert_step is not None
             assert oldest_prefix_step is not None
-            if oldest_expert_step <= oldest_prefix_step:
+            choose_expert = oldest_expert_step <= oldest_prefix_step
+            if _trace_enabled():
+                print(
+                    f"UNIFIED DECISION side=kv-alloc step={self.step} layer=all "
+                    f"expert-score={oldest_expert_step:.3f} "
+                    f"kv-score={oldest_prefix_step:.3f} "
+                    f"chosen={'expert' if choose_expert else 'kv'}",
+                    flush=True,
+                )
+            if choose_expert:
                 return self._kv_take_page_evicting_expert(oldest_expert_s)
             return self._kv_take_prefix_page(oldest_prefix_bid)
         if oldest_expert_s is not None:
@@ -1197,12 +1221,13 @@ class UnifiedPoolManager:
         # Required at level 1 for the dissertation overlay figure.
         print(
             f"UNIFIED CACHE L{layer.layer_idx} step={self.step} "
-            f"expert-bias={layer.timestamp_bias:.3f} "
             f"F={self.pages_per_super_block} "
             f"expert_sb {n_expert_ours}/{capacity_sb} ours "
             f"(expert-ours-sb={n_expert_ours}, expert-other-sb={n_expert_other}, "
             f"prefix-pages={n_prefix_pages}, alloc-kv-pages={n_alloc_kv_pages}, "
-            f"pinned-sb={n_pinned_sb}, ever-activated={len(layer.ever_activated)})",
+            f"pinned-sb={n_pinned_sb}, expert-bias={layer.timestamp_bias:.3f}, "
+            f"hits={layer.hits}, misses={layer.misses}, "
+            f"ever-activated={len(layer.ever_activated)})",
             flush=True,
         )
 
