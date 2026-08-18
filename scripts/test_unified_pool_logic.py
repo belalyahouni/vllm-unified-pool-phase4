@@ -66,6 +66,7 @@ up = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(up)
 UnifiedPool = up.UnifiedPool
 UnifiedPoolManager = up.UnifiedPoolManager
+compute_layer_timestamp_bias = up.compute_layer_timestamp_bias
 
 OFFLOAD_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
@@ -305,6 +306,8 @@ def make_pool(layer_idx, num_experts, F, num_super_blocks, contents):
     p.super_block_at_expert = {}
     p.expert_lru = OrderedDict()
     p.pinned_super_blocks = set()
+    p.ever_activated = set()
+    p.timestamp_bias = 0.0
     p.super_block_id_at = [UnifiedPool._UNLOADED] * num_experts
     p.hits = p.misses = p.forward_count = 0
     p.page_size_bytes = 8
@@ -364,6 +367,25 @@ def make_manager(block_pool, F, num_layers, num_experts):
 def test_manager_has_page_size():
     manager = make_manager(FakeBlockPool(8), 2, 1, 2)
     assert manager.page_size_bytes == 8
+
+
+def test_layer_timestamp_bias_uses_depth_and_scale():
+    assert compute_layer_timestamp_bias(0, 16, 1.0) == -480.0
+    assert abs(compute_layer_timestamp_bias(8, 16, 1.0) - -224.0) < 1e-9
+    assert compute_layer_timestamp_bias(15, 16, 1.0) == 0.0
+    assert compute_layer_timestamp_bias(0, 16, 0.0) == 0.0
+    assert compute_layer_timestamp_bias(0, 1, 1.0) == 0.0
+
+
+def test_expert_timestamps_include_layer_bias():
+    pool = make_pool(0, 2, 1, 3, {})
+    pool.timestamp_bias = -480.0
+
+    pool.assign(1, 0, step=500)
+    assert pool.expert_lru[0] == 20.0
+
+    pool.bump_expert(0, step=600)
+    assert pool.expert_lru[0] == 120.0
 
 
 def test_copy_page_covers_attention_only_layers():
@@ -489,7 +511,7 @@ def test_dma_failure_removes_new_mappings():
     assert manager.super_block_holder == {}
 
 
-def test_global_expert_uses_warmest_holder():
+def test_global_expert_uses_coldest_holder():
     block_pool = FakeBlockPool(4)
     manager = make_manager(block_pool, 1, 2, 4)
     layer0 = manager.layers[0]
@@ -505,12 +527,39 @@ def test_global_expert_uses_warmest_holder():
 
     selected, step = manager._oldest_global_expert()
 
-    assert (selected, step) == (2, 30)
+    assert (selected, step) == (1, 1)
+
+
+def test_bias_changes_expert_vs_prefix_victim():
+    early_blocks = FakeBlockPool(3)
+    early_manager = make_manager(early_blocks, 1, 1, 2)
+    early_layer = early_manager.layers[0]
+    early_layer.timestamp_bias = -30.0
+    early_layer.assign(1, 0, 100)
+    early_manager._add_holder(0, 1)
+    add_prefix(early_manager, early_blocks, 2, 102, 80)
+
+    assert early_manager._pick_one_kv_victim().block_id == 1
+
+    late_blocks = FakeBlockPool(3)
+    late_manager = make_manager(late_blocks, 1, 1, 2)
+    late_layer = late_manager.layers[0]
+    late_layer.assign(1, 0, 100)
+    late_manager._add_holder(0, 1)
+    add_prefix(late_manager, late_blocks, 2, 102, 80)
+
+    assert late_manager._pick_one_kv_victim().block_id == 2
 
 
 def test_inactive_page_tokens_are_not_validated():
     pydantic = types.ModuleType("pydantic")
-    pydantic.Field = lambda default=None, **kwargs: default
+    fields = {}
+
+    def field(default=None, **kwargs):
+        fields[len(fields)] = (default, kwargs)
+        return default
+
+    pydantic.Field = field
     pydantic.model_validator = lambda **kwargs: lambda function: function
     sys.modules["pydantic"] = pydantic
     config_utils = types.ModuleType("vllm.config.utils")
@@ -532,9 +581,14 @@ def test_inactive_page_tokens_are_not_validated():
         expert_unified_pool=False,
         expert_offload=False,
         expert_pool_page_tokens=17,
+        expert_bias_scale=1.0,
     )
 
     assert offload.OffloadConfig.validate_offload_config(inactive) is inactive
+    assert any(
+        default == 1.0 and kwargs.get("ge") == 0.0
+        for default, kwargs in fields.values()
+    )
 
     active = SimpleNamespace(**vars(inactive))
     active.expert_unified_pool = True
@@ -549,6 +603,8 @@ def test_inactive_page_tokens_are_not_validated():
 
 def run_deterministic_tests():
     test_manager_has_page_size()
+    test_layer_timestamp_bias_uses_depth_and_scale()
+    test_expert_timestamps_include_layer_bias()
     test_copy_page_covers_attention_only_layers()
     test_copy_waits_for_prior_compute_writes()
     test_relocation_preserves_lru_order()
@@ -556,7 +612,8 @@ def run_deterministic_tests():
     test_expert_miss_prefers_fewer_relocations()
     test_ensure_loaded_failure_clears_pins()
     test_dma_failure_removes_new_mappings()
-    test_global_expert_uses_warmest_holder()
+    test_global_expert_uses_coldest_holder()
+    test_bias_changes_expert_vs_prefix_victim()
     test_inactive_page_tokens_are_not_validated()
 
 

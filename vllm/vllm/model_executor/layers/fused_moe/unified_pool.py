@@ -64,6 +64,15 @@ def _trace_verbose() -> bool:
     return _TRACE_VERBOSE
 
 
+def compute_layer_timestamp_bias(
+    layer_rank: int, num_moe_layers: int, scale: float
+) -> float:
+    if num_moe_layers <= 1:
+        return 0.0
+    depth = layer_rank / (num_moe_layers - 1)
+    return -scale * 30.0 * num_moe_layers * (1.0 - depth)
+
+
 def move_experts_to_cpu(
     w13_weight: torch.nn.Parameter,
     w2_weight: torch.nn.Parameter,
@@ -106,6 +115,7 @@ class UnifiedPool:
         w13_bytes: int,
         w2_bytes: int,
         device: torch.device,
+        timestamp_bias: float,
     ) -> None:
         self.layer_idx = layer_idx
         self.num_experts = num_experts
@@ -117,6 +127,7 @@ class UnifiedPool:
         self.w13_bytes = w13_bytes
         self.w2_bytes = w2_bytes
         self.device = device
+        self.timestamp_bias = timestamp_bias
 
         # One expert spans F contiguous pages (a super-block). Phase 3
         # is F == 1.
@@ -197,7 +208,7 @@ class UnifiedPool:
 
         self.expert_at_super_block: dict[int, int] = {}
         self.super_block_at_expert: dict[int, int] = {}
-        self.expert_lru: OrderedDict[int, int] = OrderedDict()
+        self.expert_lru: OrderedDict[int, float] = OrderedDict()
         self.pinned_super_blocks: set[int] = set()
         # DIAGNOSTIC: every expert id the workload has ever routed to this
         # layer (the genuine footprint), vs what is merely resident.
@@ -227,7 +238,7 @@ class UnifiedPool:
         )
         self.expert_at_super_block[super_block_id] = expert_id
         self.super_block_at_expert[expert_id] = super_block_id
-        self.expert_lru[expert_id] = step  # most-recently-used on insert
+        self.expert_lru[expert_id] = step + self.timestamp_bias
         # Mirror onto the GPU lookup for the forward-path remap.
         self.super_block_id_at[expert_id] = super_block_id
 
@@ -244,14 +255,13 @@ class UnifiedPool:
         return expert_id
 
     def bump_expert(self, expert_id: int, step: int) -> None:
-        """Mark expert as MRU and stamp it with the current step.
+        """Mark expert as MRU and stamp it with its biased step.
 
         Called for every expert touched this forward, hit or miss, so
-        the eviction step can compare expert recency against prefix
-        recency on equal terms.
+        the eviction step can compare expert value against prefix recency.
         """
         if expert_id in self.expert_lru:
-            self.expert_lru[expert_id] = step
+            self.expert_lru[expert_id] = step + self.timestamp_bias
             self.expert_lru.move_to_end(expert_id, last=True)
 
 
@@ -299,7 +309,7 @@ class UnifiedPoolManager:
         # super_block_id -> set of layers holding an expert there.
         self.super_block_holder: dict[int, set[int]] = {}
         self.transfer_stream = torch.cuda.Stream(device=device)
-        self.step = 0  # incremented per forward; used as the MRU timestamp
+        self.step = 0  # incremented per forward; base recency timestamp
 
         # Phase 4 relocation. When on (default), vacating a KV super-block
         # for an expert preserves its warm cached-prefix pages by moving
@@ -708,9 +718,8 @@ class UnifiedPoolManager:
         Hits and miss-claimed super-blocks are pinned for the rest of
         this forward (released by release_pinned). DMAs end with a
         wait_stream barrier on the compute stream. Every needed expert
-        is bumped to MRU regardless of hit/miss, so the LRU tracks use
-        recency rather than claim recency. Trace snapshots are captured
-        before any mutation.
+        is bumped to MRU regardless of hit/miss, using the layer's fixed
+        timestamp bias. Trace snapshots are captured before any mutation.
         """
         hit_results: list[tuple[int, int]] = []  # (eid, super_block_id)
         miss_eids: list[int] = []
@@ -866,7 +875,7 @@ class UnifiedPoolManager:
         # this forward, not pinned). Reusing its super-block only drops
         # this layer's mapping; other layers keep theirs.
         own_expert_eid: int | None = None
-        own_expert_step: int | None = None
+        own_expert_step: float | None = None
         for e2, st in layer.expert_lru.items():
             if e2 in needed_set:
                 continue
@@ -965,26 +974,21 @@ class UnifiedPoolManager:
 
     # KV-side victim selection (no layer of origin).
 
-    def _oldest_global_expert(self) -> tuple[int | None, int | None]:
-        """Super-block holding the globally-coldest expert (Phase-3 policy).
+    def _oldest_global_expert(self) -> tuple[int | None, float | None]:
+        """Super-block containing the globally coldest biased expert.
 
         Returns (super_block_id, step) or (None, None) if every expert
-        super-block is pinned by some layer. A super-block is scored by its
-        *coldest* co-located expert (``min`` over holders), so the target is
-        the slot containing the single least-recently-used expert anywhere.
-        Reclaiming it broadcast-drops whatever experts other layers parked in
-        that slot too — the shared-fate cost of KV being global. This is
-        deliberate: waiting for a slot to be cold in *all* layers (``max``
-        scoring) almost never happens under cross-layer co-location, which
-        starves KV. We evict on coldness and re-load the co-located experts
-        that turn out to still be hot (they miss next forward).
+        super-block is pinned by some layer. The existing shared-fate policy
+        scores a super-block by its coldest holder so one stale co-location
+        cannot starve global KV. Per-layer timestamp bias determines which
+        layers become cold first without changing that allocation behavior.
         """
-        best_step: int | None = None
+        best_step: float | None = None
         best_s: int | None = None
         for s, holders in self.super_block_holder.items():
             if self._any_layer_pins_super_block(s):
                 continue
-            holder_steps: list[int] = []
+            holder_steps: list[float] = []
             for layer_idx in holders:
                 layer = self.layers[layer_idx]
                 eid = layer.expert_at_super_block.get(s)
@@ -1193,6 +1197,7 @@ class UnifiedPoolManager:
         # Required at level 1 for the dissertation overlay figure.
         print(
             f"UNIFIED CACHE L{layer.layer_idx} step={self.step} "
+            f"expert-bias={layer.timestamp_bias:.3f} "
             f"F={self.pages_per_super_block} "
             f"expert_sb {n_expert_ours}/{capacity_sb} ours "
             f"(expert-ours-sb={n_expert_ours}, expert-other-sb={n_expert_other}, "
@@ -1251,13 +1256,14 @@ class UnifiedPoolManager:
             num_expert_super_blocks = len(layer.expert_at_super_block)
             logger.info(
                 "UnifiedPool L%d: hits=%d misses=%d hit_rate=%.1f%% "
-                "expert_super_blocks=%d kv_prefix_pages=%d",
+                "expert_super_blocks=%d kv_prefix_pages=%d expert_bias=%.3f",
                 layer.layer_idx,
                 layer.hits,
                 layer.misses,
                 hit_rate,
                 num_expert_super_blocks,
                 num_kv_prefix,
+                layer.timestamp_bias,
             )
 
     def shutdown_log(self) -> None:

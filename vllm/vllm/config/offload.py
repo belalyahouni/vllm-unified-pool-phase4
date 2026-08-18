@@ -127,6 +127,10 @@ class OffloadConfig:
     default of 16 is the finest granularity the kernel allows. Only
     meaningful together with --expert-unified-pool."""
 
+    expert_bias_scale: float = Field(default=1.0, ge=0.0)
+    """Strength of the unified pool's depth-based expert eviction bias.
+    0 disables the bias. Only meaningful with --expert-unified-pool."""
+
     @model_validator(mode="after")
     def validate_offload_config(self) -> "OffloadConfig":
         """Validate offload configuration constraints."""
