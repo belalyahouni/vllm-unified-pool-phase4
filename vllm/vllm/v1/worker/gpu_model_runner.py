@@ -6795,7 +6795,6 @@ class GPUModelRunner(
         from vllm.model_executor.layers.fused_moe.unified_pool import (
             UnifiedPool,
             UnifiedPoolManager,
-            compute_layer_timestamp_bias,
         )
         from vllm.model_executor.models.utils import extract_layer_index
 
@@ -6844,13 +6843,7 @@ class GPUModelRunner(
             kv_pool_buffers=kv_pool_buffers,
         )
 
-        moe_layer_indices = sorted(
-            {meta["layer_idx"] for meta in self._unified_pool_metas}
-        )
-        layer_rank = {
-            layer_idx: rank for rank, layer_idx in enumerate(moe_layer_indices)
-        }
-        bias_scale = self.vllm_config.offload_config.expert_bias_scale
+        working_set_window = self.vllm_config.offload_config.expert_working_set_window
 
         for moe_module, meta in zip(
             self._unified_pool_moe_modules, self._unified_pool_metas
@@ -6863,9 +6856,6 @@ class GPUModelRunner(
                     f"KV: {sorted(attn_layers)}"
                 )
             pool_buffer = kv_pool_buffers[layer_idx]
-            timestamp_bias = compute_layer_timestamp_bias(
-                layer_rank[layer_idx], len(moe_layer_indices), bias_scale
-            )
             pool = UnifiedPool(
                 layer_idx=layer_idx,
                 num_experts=meta["num_experts"],
@@ -6877,7 +6867,7 @@ class GPUModelRunner(
                 w13_bytes=self._unified_pool_w13_bytes,
                 w2_bytes=self._unified_pool_w2_bytes,
                 device=self.device,
-                timestamp_bias=timestamp_bias,
+                working_set_window=working_set_window,
             )
             pool.manager = manager  # forward path needs the manager handle
             manager.register_layer(pool)
@@ -6909,11 +6899,11 @@ class GPUModelRunner(
         self._unified_pool_manager = manager
         logger.info(
             "UnifiedPool Stage 2 complete: %d layers, warm_count=%d, "
-            "num_gpu_blocks=%d, expert_bias_scale=%.3f",
+            "num_gpu_blocks=%d, expert_working_set_window=%d",
             num_moe_layers,
             warm_count,
             block_pool.num_gpu_blocks,
-            bias_scale,
+            working_set_window,
         )
         return block_pool.num_gpu_blocks
 

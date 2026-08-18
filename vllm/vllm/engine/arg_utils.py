@@ -457,7 +457,9 @@ class EngineArgs:
     expert_cache_size: int = get_field(OffloadConfig, "expert_cache_size")
     expert_unified_pool: bool = OffloadConfig.expert_unified_pool
     expert_pool_page_tokens: int = get_field(OffloadConfig, "expert_pool_page_tokens")
-    expert_bias_scale: float = get_field(OffloadConfig, "expert_bias_scale")
+    expert_working_set_window: int = get_field(
+        OffloadConfig, "expert_working_set_window"
+    )
     gpu_memory_utilization: float = CacheConfig.gpu_memory_utilization
     kv_cache_memory_bytes: int | None = CacheConfig.kv_cache_memory_bytes
     max_num_batched_tokens: int | None = None
@@ -1048,7 +1050,8 @@ class EngineArgs:
             **offload_kwargs["expert_pool_page_tokens"],
         )
         offload_group.add_argument(
-            "--expert-bias-scale", **offload_kwargs["expert_bias_scale"]
+            "--expert-working-set-window",
+            **offload_kwargs["expert_working_set_window"],
         )
 
         # Multimodal related configs
@@ -1934,7 +1937,7 @@ class EngineArgs:
             expert_cache_size=self.expert_cache_size,
             expert_unified_pool=self.expert_unified_pool,
             expert_pool_page_tokens=self.expert_pool_page_tokens,
-            expert_bias_scale=self.expert_bias_scale,
+            expert_working_set_window=self.expert_working_set_window,
         )
 
         if self.gdn_prefill_backend is not None:

@@ -23,7 +23,7 @@ import os
 import random
 import sys
 import types
-from collections import OrderedDict
+from collections import Counter, OrderedDict, deque
 from types import SimpleNamespace
 
 # ---- stub torch + vllm.logger so unified_pool imports on a CPU box ----
@@ -67,7 +67,6 @@ up = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(up)
 UnifiedPool = up.UnifiedPool
 UnifiedPoolManager = up.UnifiedPoolManager
-compute_layer_timestamp_bias = up.compute_layer_timestamp_bias
 
 OFFLOAD_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
@@ -308,7 +307,9 @@ def make_pool(layer_idx, num_experts, F, num_super_blocks, contents):
     p.expert_lru = OrderedDict()
     p.pinned_super_blocks = set()
     p.ever_activated = set()
-    p.timestamp_bias = 0.0
+    p.working_set_window = 0
+    p.recent_expert_sets = deque()
+    p.recent_expert_counts = Counter()
     p.super_block_id_at = [UnifiedPool._UNLOADED] * num_experts
     p.hits = p.misses = p.forward_count = 0
     p.page_size_bytes = 8
@@ -370,23 +371,39 @@ def test_manager_has_page_size():
     assert manager.page_size_bytes == 8
 
 
-def test_layer_timestamp_bias_uses_depth_and_scale():
-    assert compute_layer_timestamp_bias(0, 16, 1.0) == -480.0
-    assert abs(compute_layer_timestamp_bias(8, 16, 1.0) - -224.0) < 1e-9
-    assert compute_layer_timestamp_bias(15, 16, 1.0) == 0.0
-    assert compute_layer_timestamp_bias(0, 16, 0.0) == 0.0
-    assert compute_layer_timestamp_bias(0, 1, 1.0) == 0.0
+def test_rolling_working_set_tracks_recent_experts():
+    pool = make_pool(0, 8, 1, 9, {})
+    pool.working_set_window = 3
+
+    pool.record_expert_accesses([0, 1])
+    pool.record_expert_accesses([1, 2])
+    pool.record_expert_accesses([2, 3])
+    assert pool.working_set_ready
+    assert pool.working_set_size == 4
+
+    pool.record_expert_accesses([3])
+    assert pool.working_set_size == 3
 
 
-def test_expert_timestamps_include_layer_bias():
-    pool = make_pool(0, 2, 1, 3, {})
-    pool.timestamp_bias = -480.0
+def test_adaptive_target_is_mean_working_set():
+    manager = make_manager(FakeBlockPool(8), 1, 2, 8)
+    for layer in manager.layers.values():
+        layer.working_set_window = 2
+    manager.layers[0].record_expert_accesses([0, 1, 2, 3])
+    manager.layers[0].record_expert_accesses([0, 1, 2, 3])
+    manager.layers[1].record_expert_accesses([0, 1])
+    manager.layers[1].record_expert_accesses([0, 1])
 
-    pool.assign(1, 0, step=500)
-    assert pool.expert_lru[0] == 20.0
+    assert manager._adaptive_expert_target() == 3
 
-    pool.bump_expert(0, step=600)
-    assert pool.expert_lru[0] == 120.0
+
+def test_equal_working_sets_keep_full_target():
+    manager = make_manager(FakeBlockPool(8), 1, 2, 8)
+    for layer in manager.layers.values():
+        layer.working_set_window = 1
+        layer.record_expert_accesses([0, 1, 2, 3, 4, 5])
+
+    assert manager._adaptive_expert_target() == 6
 
 
 def test_copy_page_covers_attention_only_layers():
@@ -531,32 +548,42 @@ def test_global_expert_uses_coldest_holder():
     assert (selected, step) == (1, 1)
 
 
-def test_bias_changes_expert_vs_prefix_victim():
-    early_blocks = FakeBlockPool(3)
-    early_manager = make_manager(early_blocks, 1, 1, 2)
-    early_layer = early_manager.layers[0]
-    early_layer.timestamp_bias = -30.0
-    early_layer.assign(1, 0, 100)
-    early_manager._add_holder(0, 1)
-    add_prefix(early_manager, early_blocks, 2, 102, 80)
+def test_kv_prefers_expert_while_footprint_exceeds_target():
+    block_pool = FakeBlockPool(4)
+    manager = make_manager(block_pool, 1, 2, 4)
+    for layer in manager.layers.values():
+        layer.working_set_window = 1
+        layer.record_expert_accesses([0])
+    manager.layers[0].assign(1, 0, 100)
+    manager.layers[0].assign(2, 1, 100)
+    manager._add_holder(0, 1)
+    manager._add_holder(0, 2)
+    add_prefix(manager, block_pool, 3, 103, 0)
 
-    assert early_manager._pick_one_kv_victim().block_id == 1
-
-    late_blocks = FakeBlockPool(3)
-    late_manager = make_manager(late_blocks, 1, 1, 2)
-    late_layer = late_manager.layers[0]
-    late_layer.assign(1, 0, 100)
-    late_manager._add_holder(0, 1)
-    add_prefix(late_manager, late_blocks, 2, 102, 80)
-
-    assert late_manager._pick_one_kv_victim().block_id == 2
+    assert manager._pick_one_kv_victim().block_id in (1, 2)
 
 
-def test_trace_reports_bias_outcomes_and_mixed_decisions():
+def test_expert_miss_recycles_expert_at_target():
+    block_pool = FakeBlockPool(3)
+    manager = make_manager(block_pool, 1, 1, 3)
+    layer = manager.layers[0]
+    layer.working_set_window = 1
+    layer.record_expert_accesses([0])
+    layer.assign(1, 0, 100)
+    manager._add_holder(0, 1)
+    add_prefix(manager, block_pool, 2, 102, 0)
+
+    selected, tier = manager._evict_for_expert(layer, 1, {1})
+
+    assert (selected, tier) == (1, "expert-local")
+
+
+def test_trace_reports_working_set_target_and_mixed_decisions():
     block_pool = FakeBlockPool(3)
     manager = make_manager(block_pool, 1, 1, 2)
     layer = manager.layers[0]
-    layer.timestamp_bias = -30.0
+    layer.working_set_window = 1
+    layer.record_expert_accesses([0])
     layer.ever_activated.add(0)
     layer.hits = 3
     layer.misses = 1
@@ -570,17 +597,16 @@ def test_trace_reports_bias_outcomes_and_mixed_decisions():
     try:
         with contextlib.redirect_stdout(output):
             manager._trace_pre_mutation(layer, [0])
+            manager._adaptive_expert_target = lambda: None
             manager._pick_one_kv_victim()
     finally:
         up._TRACE_ENABLED = old_trace
 
     trace = output.getvalue()
-    assert "expert-bias=-30.000" in trace
+    assert "working-set=1, expert-target=1" in trace
     assert "hits=3, misses=1, ever-activated=1" in trace
     assert "UNIFIED DECISION side=kv-alloc" in trace
-    assert "expert-score=70.000 kv-score=80.000 chosen=expert" in trace
-    assert "UNIFIED EVICT sb=1 L0 kind=expert E0" in trace
-    assert "score=70.000 step=0" in trace
+    assert "expert-score=100.000 kv-score=80.000 chosen=kv" in trace
 
 
 def test_inactive_page_tokens_are_not_validated():
@@ -613,13 +639,12 @@ def test_inactive_page_tokens_are_not_validated():
         expert_unified_pool=False,
         expert_offload=False,
         expert_pool_page_tokens=17,
-        expert_bias_scale=1.0,
+        expert_working_set_window=64,
     )
 
     assert offload.OffloadConfig.validate_offload_config(inactive) is inactive
     assert any(
-        default == 1.0 and kwargs.get("ge") == 0.0
-        for default, kwargs in fields.values()
+        default == 64 and kwargs.get("ge") == 0 for default, kwargs in fields.values()
     )
 
     active = SimpleNamespace(**vars(inactive))
@@ -635,8 +660,9 @@ def test_inactive_page_tokens_are_not_validated():
 
 def run_deterministic_tests():
     test_manager_has_page_size()
-    test_layer_timestamp_bias_uses_depth_and_scale()
-    test_expert_timestamps_include_layer_bias()
+    test_rolling_working_set_tracks_recent_experts()
+    test_adaptive_target_is_mean_working_set()
+    test_equal_working_sets_keep_full_target()
     test_copy_page_covers_attention_only_layers()
     test_copy_waits_for_prior_compute_writes()
     test_relocation_preserves_lru_order()
@@ -645,8 +671,9 @@ def run_deterministic_tests():
     test_ensure_loaded_failure_clears_pins()
     test_dma_failure_removes_new_mappings()
     test_global_expert_uses_coldest_holder()
-    test_bias_changes_expert_vs_prefix_victim()
-    test_trace_reports_bias_outcomes_and_mixed_decisions()
+    test_kv_prefers_expert_while_footprint_exceeds_target()
+    test_expert_miss_recycles_expert_at_target()
+    test_trace_reports_working_set_target_and_mixed_decisions()
     test_inactive_page_tokens_are_not_validated()
 
 
