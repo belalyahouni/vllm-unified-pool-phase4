@@ -1,54 +1,55 @@
-% Appendix section: cost of the unified mechanism.
+% Appendix section: cost of cross-type eviction.
 % Place after \appendix; reference from the main text as Appendix~\ref{app:cost}.
 %
 % PROVISIONAL: the relocation count and its share of run time are scaled
 % estimates from a shorter traced run (60 expert requests, 5845
-% relocations, scaled to the reported 220). A profiled run at 220 is in
-% progress; replace the two marked figures with its counts.
+% relocations, scaled to the reported 220). A profiled run at the reported
+% length is in progress; replace both figures with its counts.
 
 \appendix
 
 \section{Cost of Cross-Type Eviction}
 \label{app:cost}
 
-Allowing either resource to evict the other adds work a fixed partition
-does not do: an incoming expert needs a contiguous super-block, so warm KV
-pages in its way are physically relocated. We measure that cost to
-establish it is not a hidden tax.
+Only one direction of cross-type eviction moves data. When KV reclaims an
+expert's super-block, the pool drops the expert's mapping and the weights
+are reloaded from the host when next needed. When an expert reclaims KV
+space it needs a contiguous super-block, so the cached pages sitting in
+that region are copied elsewhere to keep them. This appendix measures that
+copy and how often it happens.
 
-Byte movement is timed with CUDA events on the pool's transfer stream, in
-the configuration of Section~\ref{sec:evaluation} (one NVIDIA L4; expert
-slot 12\,MiB; $F=96$ pages of 128\,KiB), over 500 repetitions.
+We time data movement with CUDA events on the pool's transfer stream, in
+the configuration of Section~\ref{sec:evaluation} (one NVIDIA L4, expert
+slot 12\,MiB, $F=96$ pages of 128\,KiB), over 500 repetitions. A KV block
+is global, so relocating one page copies it in all 16 layer buffers.
 
 \begin{table}[h]
 \centering
-\caption{Byte movement in the unified pool. A relocation moves the page in
-every layer's buffer, because a KV block is global.}
+\caption{Data movement in the unified pool.}
 \label{tab:cost}
 \small
 \begin{tabular}{l r r r}
 \toprule
 \textbf{Operation} & \textbf{Mean} & \textbf{Bytes} & \textbf{Rate} \\
 \midrule
-Expert load (pinned host $\rightarrow$ pool) & 0.946\,ms & 12\,MiB & 12.4\,GiB/s \\
+Expert load (pinned host to pool) & 0.946\,ms & 12\,MiB & 12.4\,GiB/s \\
 KV page relocation ($16\times128$\,KiB) & 0.113\,ms & 2\,MiB & 17.2\,GiB/s \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-The expert load is bounded by PCIe and is paid by any expert-offloading
-system. A single expert load is worth $8.4$ relocations, so preserving warm
-KV state is cheap relative to the expert transfer that displaces it.
+The expert load is bounded by PCIe, and any expert-offloading system pays
+it. One such load costs as much as $8.4$ relocations, so keeping a warm
+page is cheap next to the transfer that displaces it.
 
-Aggregate cost stays small because relocation is infrequent. Across the
-KV$\rightarrow$expert shift of Section~\ref{sec:evaluation} the pool
-performed roughly $21{,}000$ relocations, about $2.4$\,s of copying, or
-$0.1\%$ of that run.\footnote{Provisional: scaled from a traced run with a
-shorter expert phase; to be replaced by a directly profiled run.} Since
-the reported speedup is end-to-end wall-clock time with the mechanism
-active, this cost is already contained in it rather than additional to it.
+Relocation is also infrequent. Over the shift from the KV-heavy to the
+expert-heavy phase, the pool relocated about $21{,}000$ pages, roughly
+$2.4$\,s of copying, or $0.1\%$ of the run.\footnote{Provisional: scaled
+from a traced run with a shorter expert phase, pending a directly profiled
+run.} The reported speedup is end-to-end wall-clock time measured with the
+mechanism running, so this cost is inside that number rather than
+additional to it.
 
-These figures cover byte movement, which includes the GPU-side copies.
-Host-side victim selection is excluded; it is a comparison over per-layer
-expert recency and global prefix recency, answered from one end of an
-ordered structure, and is flat in pool occupancy.
+These figures cover data movement, including the GPU copies. They exclude
+the host-side cost of selecting a victim, which does not grow as the pool
+fills.
