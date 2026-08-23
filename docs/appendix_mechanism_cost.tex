@@ -1,0 +1,93 @@
+% Appendix section: mechanism cost. Drop in after the main text
+% (\appendix), and reference from the Limitations paragraph with
+% Appendix~\ref{app:cost}.
+
+\appendix
+
+\section{Cost of the Unified Mechanism}
+\label{app:cost}
+
+Making KV pages and expert weights interchangeable adds work that a fixed
+partition does not do: the pool must choose which resident item loses, and
+an incoming expert may have to relocate warm KV pages to assemble a
+contiguous super-block. This appendix measures both, to establish that
+neither is a significant tax relative to the transfer they schedule.
+
+We separate two components. \emph{Byte movement} is timed with CUDA events
+on the pool's transfer stream. \emph{Policy} is the host-side work of
+selecting a victim and clearing a super-block, timed with a wall clock.
+Both are measured in the configuration reported in
+Section~\ref{sec:evaluation}: one NVIDIA L4, OLMoE-1B-7B-Instruct, 16 MoE
+layers, an expert slot of 12\,MiB, and $M=67$ super-blocks of $F=96$ pages
+of 128\,KiB (6432 pages). Byte-movement figures are means over 200
+repetitions; policy figures are means over 20, and are reported against
+\emph{KV occupancy}, the fraction of the pool holding evictable
+cached-prefix pages.
+
+\begin{table}[h]
+\centering
+\caption{Byte movement in the unified pool. One page relocation moves the
+page in every layer's buffer, because a KV block is global.}
+\label{tab:cost-bytes}
+\small
+\begin{tabular}{l r r r r}
+\toprule
+\textbf{Operation} & \textbf{Mean} & \textbf{p99} & \textbf{Bytes} & \textbf{Rate} \\
+\midrule
+Expert load (pinned host $\rightarrow$ pool) & 0.946\,ms & 0.947\,ms & 12\,MiB & 12.4\,GiB/s \\
+One page relocation ($16\times$128\,KiB) & 0.116\,ms & 0.195\,ms & 2\,MiB & 16.8\,GiB/s \\
+\quad same bytes, one contiguous copy & 0.012\,ms & 0.016\,ms & 2\,MiB & 160.3\,GiB/s \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The expert load is bandwidth-bound on PCIe and is the irreducible term:
+any expert-offloading system pays it. Relocation, the operation unique to
+the unified pool, costs $0.116$\,ms per page, so one expert load is worth
+$8.2$ relocations. Preserving warm KV state is therefore inexpensive
+relative to the expert transfer that motivates it.
+
+\begin{table}[h]
+\centering
+\caption{Host-side policy cost per operation ($\mu$s), against KV
+occupancy. Cost is essentially independent of how full the pool is.}
+\label{tab:cost-policy}
+\small
+\begin{tabular}{l r r r r r}
+\toprule
+& \multicolumn{5}{c}{\textbf{KV occupancy}} \\
+\cmidrule(l){2-6}
+\textbf{Operation} & 0\% & 25\% & 50\% & 75\% & 95\% \\
+\midrule
+Resolve an expert miss & 30.4 & 35.6 & 35.3 & 36.4 & 38.1 \\
+\quad select the super-block to clear & 13.4 & 23.7 & 22.7 & 22.7 & 22.6 \\
+Clear a super-block (evict + relocate) & 72.6 & 101.7 & 98.2 & 97.0 & 113.7 \\
+Select a KV victim page & 3.6 & 2.8 & 3.1 & 3.3 & 3.2 \\
+Find the coldest prefix page & 0.6 & 0.6 & 0.6 & 0.6 & 0.6 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Resolving an expert miss costs $38\,\mu$s at 95\% KV occupancy, about 4\%
+of the 0.946\,ms transfer it schedules, and the cost is flat in occupancy.
+Flatness matters more than the absolute figure: the pool does its
+cross-type reasoning precisely when memory is scarce, so a policy whose
+cost grew with occupancy would be most expensive exactly when it is used
+most. Keeping cached-prefix pages in a recency-ordered structure, and
+keeping per-super-block state, makes each query answerable from one end of
+that order rather than by scanning the pool.
+
+Relocation is limited by kernel-launch overhead rather than bandwidth: a
+page relocation issues one small copy per layer and costs $9.5\times$ a
+single contiguous copy of the same bytes (Table~\ref{tab:cost-bytes}).
+Its latency is consequently flat below roughly 512\,KiB pages
+($0.109$\,ms at $F=24$ versus $0.108$\,ms at the $F=96$ we use), while
+larger pages achieve better effective bandwidth
+($117$\,GiB/s at $F=6$). Fine pages therefore buy KV-side allocation
+granularity at no latency cost, which is why we page at the smallest
+granularity the fused kernel permits.
+
+Two caveats. The policy measurements drive the real allocator with the GPU
+seams stubbed, so they capture host-side cost only. They also place no
+pinned or in-use pages in the pool, which removes the early exits a live
+forward would take; the figures are therefore upper bounds.

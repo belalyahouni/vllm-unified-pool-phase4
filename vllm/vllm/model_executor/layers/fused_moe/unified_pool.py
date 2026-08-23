@@ -54,12 +54,14 @@ logger = init_logger(__name__)
 # dump step headers and the LRU snapshots (debug only, slow).
 # Which recency a candidate KV super-block is scored by when weighed
 # against an expert on an expert miss.
-#   "warmest" (default) -- its warmest cached page, the anti-starvation
-#     bias from commit 25a42a4, which protects KV;
-#   "oldest" -- its coldest page, i.e. coldest-KV vs coldest-expert, which
-#     is how the paper words the policy.
-# Exposed so the two can be A/B'd on the same build.
-_KV_SCORE = os.environ.get("VLLM_UNIFIED_POOL_KV_SCORE", "warmest")
+#   "oldest" (default) -- its coldest page, i.e. coldest-KV against
+#     coldest-expert, the policy as described;
+#   "warmest" -- its warmest cached page.
+# Measured on both the synthetic and the real-code KV-heavy workloads, the
+# choice does not affect prefix retention (16/16 either way when the
+# working set fits the pool, 2/8 either way when it does not), so the
+# simpler description is the default. Kept switchable for A/B runs.
+_KV_SCORE = os.environ.get("VLLM_UNIFIED_POOL_KV_SCORE", "oldest")
 assert _KV_SCORE in ("warmest", "oldest"), (
     f"VLLM_UNIFIED_POOL_KV_SCORE must be warmest|oldest, got {_KV_SCORE!r}"
 )
