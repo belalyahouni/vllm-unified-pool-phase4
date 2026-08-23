@@ -516,7 +516,17 @@ def test_kv_victim_uses_oldest_timestamp():
     assert victim.block_id == 2
 
 
-def test_expert_miss_prefers_fewer_relocations():
+def test_expert_miss_prefers_coldest_filled_super_block():
+    """Vacate the super-block holding the least warm KV ("most cold pages").
+
+    F=2, so sb1 = {p2,p3} and sb2 = {p4}. With the cold frontier at the
+    F-th coldest page, sb1's pages (steps 1, 2) are both cold and sb2's
+    (step 10) is warm. sb1 therefore exposes no warm KV and wins, even
+    though it holds more pages and so may cost one extra relocation.
+
+    The previous policy ranked by predicted relocation count and picked
+    sb2, disturbing the pool's only warm page to save a 0.116 ms copy.
+    """
     block_pool = FakeBlockPool(8)
     manager = make_manager(block_pool, 2, 1, 2)
     layer = manager.layers[0]
@@ -526,7 +536,26 @@ def test_expert_miss_prefers_fewer_relocations():
 
     selected, _ = manager._evict_for_expert(layer, 0, {0})
 
-    assert selected == 2
+    assert selected == 1
+
+
+def test_expert_miss_avoids_warm_super_block_when_full():
+    """With every candidate full, ranking falls to cold-page count.
+
+    F=4: sb1 = {p4..p7} all cold, sb2 = {p8..p11} all warm. Both are
+    full, so a "fewest total pages" rule could not separate them.
+    """
+    block_pool = FakeBlockPool(16)
+    manager = make_manager(block_pool, 4, 1, 2)
+    layer = manager.layers[0]
+    for i, p in enumerate(range(4, 8)):
+        add_prefix(manager, block_pool, p, 200 + p, i)
+    for i, p in enumerate(range(8, 12)):
+        add_prefix(manager, block_pool, p, 200 + p, 100 + i)
+
+    selected, _ = manager._evict_for_expert(layer, 0, {0})
+
+    assert selected == 1
 
 
 def test_ensure_loaded_failure_clears_pins():
@@ -718,7 +747,8 @@ def run_deterministic_tests():
     test_copy_waits_for_prior_compute_writes()
     test_relocation_preserves_lru_order()
     test_kv_victim_uses_oldest_timestamp()
-    test_expert_miss_prefers_fewer_relocations()
+    test_expert_miss_prefers_coldest_filled_super_block()
+    test_expert_miss_avoids_warm_super_block_when_full()
     test_ensure_loaded_failure_clears_pins()
     test_dma_failure_removes_new_mappings()
     test_global_expert_uses_coldest_holder()

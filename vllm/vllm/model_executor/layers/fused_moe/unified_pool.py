@@ -32,6 +32,7 @@ call. No staging tensor, no extra GPU memory beyond the pool itself.
 
 from __future__ import annotations
 
+import heapq
 import os
 from collections import Counter, OrderedDict, deque
 from typing import TYPE_CHECKING
@@ -978,19 +979,34 @@ class UnifiedPoolManager:
         """The cheapest super-block to vacate for an expert, plus the KV
         recency score to weigh against expert recency.
 
-        Walks ``prefix_lru`` -- the cached-prefix pages that actually
-        exist -- once, tallying per super-block how many it holds and how
-        cold its oldest page is. Candidates are then tried cheapest-first,
-        where cheapest means "fewest pages to move", which is a proxy for
-        "fewest relocations".
+        Candidates are ranked by how many *warm* pages they hold, fewest
+        first -- equivalently, by most cold pages, which is the rule the
+        paper states. Vacating a super-block puts its pages at risk: they
+        are relocated if a hole or a colder page exists to displace, and
+        dropped otherwise. Choosing the coldest-filled super-block
+        therefore minimises the warm KV exposed to that risk, and stays
+        meaningful whether or not the pool is full:
 
-        This replaced a sweep that computed the exact relocation plan for
-        every super-block, each pass rescanning the whole block array:
-        O(num_super_blocks * num_blocks), measured at 165 ms per miss at
-        95% KV occupancy. The proxy can pick a super-block needing an
-        extra page move, and a page move costs 0.116 ms -- so paying up to
-        a few extra moves is strictly better than spending 165 ms to avoid
-        them. See docs/MECHANISM_COST.md.
+        * not full: few pages at all, so few warm ones;
+        * full but mostly cold: 96 pages of which 80 are cold, 16 warm;
+        * full and warm: 90 warm, correctly avoided.
+
+        Note this ranks by *risk to warm KV*, not by number of copies: a
+        mostly-cold super-block can still cost more relocations than a
+        near-empty one, because cold pages are preserved too when holes are
+        available. At 0.116 ms per page copy that is the right trade.
+
+        Cold means "among the globally coldest ``pages_per_super_block``
+        prefix pages", mirroring ``_vacate_kv_super_block``, which drops a
+        page only when nothing colder exists elsewhere -- so the pages it
+        drops are the globally coldest. At most F pages are ever cleared,
+        hence that frontier and no tunable constant.
+
+        Everything comes out of one pass over ``prefix_lru`` -- the pages
+        that exist -- rather than the previous sweep, which computed the
+        exact relocation plan for every super-block and rescanned the whole
+        block array each time: O(num_super_blocks * num_blocks), measured
+        at 165 ms per miss at 95% KV occupancy. See docs/MECHANISM_COST.md.
 
         The returned score is the chosen super-block's *oldest* page, so
         the caller compares oldest-expert against oldest-KV, matching the
@@ -998,18 +1014,33 @@ class UnifiedPoolManager:
         expert-held, unpinned, no live page) are applied only to
         candidates as they are tried, not to all of them up front.
         """
-        counts: Counter[int] = Counter()
+        if not self.prefix_lru:
+            return None, None
+
+        # Cold frontier: the step of the F-th coldest prefix page. Pages at
+        # or below it are droppable, so they cost nothing to clear.
+        F = self.pages_per_super_block
+        steps = self.prefix_lru.values()
+        if len(self.prefix_lru) <= F:
+            cold_frontier = max(steps)
+        else:
+            cold_frontier = heapq.nsmallest(F, steps)[-1]
+
+        warm: Counter[int] = Counter()
         oldest: dict[int, int] = {}
         for p, step in self.prefix_lru.items():
             s = self._super_block_of_page(p)
-            counts[s] += 1
+            if step > cold_frontier:
+                warm[s] += 1
+            elif s not in warm:
+                warm[s] = 0  # candidate with only cold pages: free to clear
             prev = oldest.get(s)
             if prev is None or step < prev:
                 oldest[s] = step
-        if not counts:
+        if not warm:
             return None, None
 
-        for s, _n in sorted(counts.items(), key=lambda kv: (kv[1], oldest[kv[0]])):
+        for s, _n in sorted(warm.items(), key=lambda kv: (kv[1], oldest[kv[0]])):
             if s == 0:  # reserved: holds BlockPool's null page
                 continue
             if self.super_block_holder.get(s):
