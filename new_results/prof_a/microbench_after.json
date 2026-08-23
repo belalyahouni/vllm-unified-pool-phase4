@@ -24,7 +24,7 @@
       96,
       384
     ],
-    "json": "/root/mb_cold.json"
+    "json": "/root/mb_final.json"
   },
   "cpu": {
     "config": {
@@ -42,15 +42,15 @@
         "prefix_pages": 48,
         "expert_super_blocks": 64,
         "read_only_us": {
-          "cheapest_kv_super_block": 10.30266284942627,
-          "oldest_global_expert": 108.14424604177475,
-          "coldest_prefix_page": 20.387955009937286,
-          "first_free_page": 8.935853838920593
+          "cheapest_kv_super_block": 10.405294597148895,
+          "oldest_global_expert": 107.08421468734741,
+          "coldest_prefix_page": 20.090490579605103,
+          "first_free_page": 9.386241436004639
         },
         "mutating_us": {
-          "vacate_kv_super_block": 500.11035054922104,
-          "select_kv_victim": 3.5585835576057434,
-          "evict_for_expert": 21.511688828468323
+          "vacate_kv_super_block": 65.81265479326248,
+          "select_kv_victim": 3.1054019927978516,
+          "evict_for_expert": 23.894570767879486
         },
         "relocations_per_vacate": null
       },
@@ -61,15 +61,15 @@
         "prefix_pages": 768,
         "expert_super_blocks": 50,
         "read_only_us": {
-          "cheapest_kv_super_block": 179.5656979084015,
-          "oldest_global_expert": 98.59651327133179,
-          "coldest_prefix_page": 385.9167918562889,
-          "first_free_page": 10.91156154870987
+          "cheapest_kv_super_block": 164.6248623728752,
+          "oldest_global_expert": 89.10764008760452,
+          "coldest_prefix_page": 340.254046022892,
+          "first_free_page": 8.760206401348114
         },
         "mutating_us": {
-          "vacate_kv_super_block": 5323.387123644352,
-          "select_kv_victim": 3.079324960708618,
-          "evict_for_expert": 226.5293151140213
+          "vacate_kv_super_block": 556.5665662288666,
+          "select_kv_victim": 2.6674941182136536,
+          "evict_for_expert": 186.62773072719574
         },
         "relocations_per_vacate": null
       },
@@ -80,15 +80,15 @@
         "prefix_pages": 1584,
         "expert_super_blocks": 33,
         "read_only_us": {
-          "cheapest_kv_super_block": 339.3080085515976,
-          "oldest_global_expert": 61.48573011159897,
-          "coldest_prefix_page": 827.7887478470802,
-          "first_free_page": 10.434351861476898
+          "cheapest_kv_super_block": 331.43553882837296,
+          "oldest_global_expert": 56.81291222572327,
+          "coldest_prefix_page": 674.1963326931,
+          "first_free_page": 8.711591362953186
         },
         "mutating_us": {
-          "vacate_kv_super_block": 10306.724905967712,
-          "select_kv_victim": 3.265589475631714,
-          "evict_for_expert": 376.7937421798706
+          "vacate_kv_super_block": 949.0182623267174,
+          "select_kv_victim": 2.9515475034713745,
+          "evict_for_expert": 353.039987385273
         },
         "relocations_per_vacate": null
       },
@@ -99,15 +99,15 @@
         "prefix_pages": 2400,
         "expert_super_blocks": 16,
         "read_only_us": {
-          "cheapest_kv_super_block": 607.0660427212715,
-          "oldest_global_expert": 33.73883664608002,
-          "coldest_prefix_page": 1048.0809956789017,
-          "first_free_page": 8.782371878623962
+          "cheapest_kv_super_block": 500.06210803985596,
+          "oldest_global_expert": 27.02288329601288,
+          "coldest_prefix_page": 1002.7248412370683,
+          "first_free_page": 8.683651685714722
         },
         "mutating_us": {
-          "vacate_kv_super_block": 15474.321506917477,
-          "select_kv_victim": 5.165301263332367,
-          "evict_for_expert": 571.5394392609596
+          "vacate_kv_super_block": 1324.7428461909294,
+          "select_kv_victim": 2.868659794330597,
+          "evict_for_expert": 526.629388332367
         },
         "relocations_per_vacate": null
       },
@@ -118,15 +118,15 @@
         "prefix_pages": 3024,
         "expert_super_blocks": 3,
         "read_only_us": {
-          "cheapest_kv_super_block": 641.4329633116722,
-          "oldest_global_expert": 5.0982460379600525,
-          "coldest_prefix_page": 1245.1013550162315,
-          "first_free_page": 9.10237431526184
+          "cheapest_kv_super_block": 625.6364285945892,
+          "oldest_global_expert": 5.3025782108306885,
+          "coldest_prefix_page": 1276.9749388098717,
+          "first_free_page": 8.71364027261734
         },
         "mutating_us": {
-          "vacate_kv_super_block": 29901.67587995529,
-          "select_kv_victim": 3.5563483834266663,
-          "evict_for_expert": 734.5797494053841
+          "vacate_kv_super_block": 2635.7950642704964,
+          "select_kv_victim": 2.8191134333610535,
+          "evict_for_expert": 655.3875282406807
         },
         "relocations_per_vacate": null
       }

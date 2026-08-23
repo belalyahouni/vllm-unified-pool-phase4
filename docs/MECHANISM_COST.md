@@ -132,52 +132,42 @@ needs no tunable constant.
 Relocation is untouched: `_vacate_kv_super_block` and `_relocate_kv_page`
 still move warm pages into scattered holes and kill only the coldest.
 
-Cost of one expert miss (`evict_for_expert`, µs, same pod, 20 reps):
+Cost per operation (µs, same pod, 20 reps):
 
-| KV frac | before | after | speedup |
-|---|---|---|---|
-| 0.00 | 831 | **21.5** | 39x |
-| 0.25 | 20,605 | **226.5** | 91x |
-| 0.50 | 62,875 | **376.8** | 167x |
-| 0.75 | 129,353 | **571.5** | 226x |
-| 0.95 | **197,211** | **734.6** | **268x** |
+| KV frac | `evict_for_expert` before | after | | `vacate_kv_super_block` before | after |
+|---|---|---|---|---|---|
+| 0.00 | 831 | **23.9** | | 500 | **65.8** |
+| 0.25 | 20,605 | **186.6** | | 5,323 | **556.6** |
+| 0.50 | 62,875 | **353.0** | | 10,307 | **949.0** |
+| 0.75 | 129,353 | **526.6** | | 15,474 | **1,324.7** |
+| 0.95 | **197,211** | **655.4** | | **29,902** | **2,635.8** |
 
-The decision now costs ~0.73 ms against the 0.95 ms DMA it schedules,
-instead of 197 ms — the right order of magnitude for scheduling a 12 MiB
-copy.
+At 95% KV occupancy a miss that has to evict KV went from ~227 ms of
+Python (197 ms deciding + 30 ms clearing) to **~3.3 ms** — about 69x.
+Deciding is now 0.66 ms against the 0.95 ms DMA it schedules.
 
-Two deliberate consequences:
+`vacate_kv_super_block` improved 11.3x, not the "well under 1 ms" first
+predicted: the remaining 2.6 ms is one pass over `prefix_lru` plus a sort
+to build the coldest-first list, and the per-page relocation bookkeeping
+itself. Reducing it further would need incrementally maintained state
+rather than a per-vacate rebuild.
 
-* Ranking is by *risk to warm KV*, not copy count: a mostly-cold
-  super-block can cost an extra relocation, since cold pages are
-  preserved too when holes are available. The fuzzer sizes the trade at
-  651 relocations across 400 seeds vs 645 before — six extra page copies,
-  ~0.7 ms total — for never disturbing warm KV to save a copy.
+Three deliberate consequences:
+
+* Candidate ranking is by *risk to warm KV*, not copy count: a
+  mostly-cold super-block can cost an extra relocation, since cold pages
+  are preserved too when holes are available. The fuzzer sizes the trade
+  at 651 relocations across 400 seeds vs 645 before — six extra page
+  copies, ~0.7 ms total — for never disturbing warm KV to save a copy.
 * The mixed-LRU score is now the chosen super-block's *oldest* page rather
   than its warmest, so the comparison is oldest-expert vs oldest-KV — what
   the Method section describes. The old warmest-page score made KV look
   warmer than it was and biased the decision toward evicting experts.
+* `prefix_lru` insertion order no longer tracks recency. Nothing reads it
+  that way; the level-2 verbose trace now sorts explicitly.
 
-Verified: fuzzer 400 seeds pass, deterministic regressions pass, 25 unit
-tests pass.
-
-### Remaining: `vacate_kv_super_block` (29.9 ms at 95% KV)
-
-Same anti-pattern, not yet fixed. Per page of the super-block being
-cleared it does:
-
-1. `_coldest_prefix_page` — a full scan of all ~3024 prefix entries
-   (1,245 µs) whenever no free hole is available;
-2. `_relocate_kv_page` — which re-sorts the **entire** `prefix_lru`,
-   O(n log n), on every relocated page.
-
-Both are per-page recomputations of a global quantity. The re-sort looks
-like dead weight: every consumer (`_coldest_prefix_page`,
-`_pick_one_kv_victim`, `_cheapest_kv_super_block`) scans and compares step
-values explicitly rather than trusting order — `_coldest_prefix_page`'s
-own docstring says it does so "because relocation can leave order and step
-value out of sync". Hoisting the cold-page search to once per vacate and
-dropping the re-sort should take this well under 1 ms.
+Verified: fuzzer 400 seeds pass with relocations unchanged at 651 across
+the vacate rewrite, deterministic regressions pass, 25 unit tests pass.
 
 ## 5. Consequences for the paper
 
