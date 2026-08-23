@@ -42,13 +42,13 @@ The expert load is bounded by PCIe, and any expert-offloading system pays
 it. One such load costs as much as $8.4$ relocations, so keeping a warm
 page is cheap next to the transfer that displaces it.
 
-Relocation is also infrequent. Over the shift from the KV-heavy to the
-expert-heavy phase, the pool relocated about $21{,}000$ pages, roughly
-$2.4$\,s of copying, or $0.1\%$ of the run.\footnote{Provisional: scaled
-from a traced run with a shorter expert phase, pending a directly profiled
-run.} The reported speedup is end-to-end wall-clock time measured with the
-mechanism running, so this cost is inside that number rather than
-additional to it.
+In aggregate the cost stays small even though the mechanism is busy. Over
+the shift from the KV-heavy to the expert-heavy phase, the pool relocated
+about $21{,}000$ pages, which accounts for $0.1\%$ of that
+run.\footnote{Provisional: scaled from a traced run with a shorter expert
+phase, pending a directly profiled run.} The reported speedup is
+end-to-end wall-clock time measured with the mechanism running, so this
+cost is inside that number rather than additional to it.
 
 These figures cover data movement, including the GPU copies. They exclude
 the host-side cost of selecting a victim, which does not grow as the pool
