@@ -1153,43 +1153,58 @@ class UnifiedPoolManager:
         blocks = self.block_pool.blocks
         F = self.pages_per_super_block
 
-        free_pure_s: int | None = None
-        cross_layer_s: int | None = None
+        # Co-location candidates are exactly the expert-held super-blocks,
+        # so read them off super_block_holder instead of walking the pool
+        # asking every super-block whether it is held. min() keeps the
+        # choice identical to the old ascending scan (dict order is
+        # insertion order). Co-location is preferred over a fully free
+        # super-block, so finding one settles the answer.
+        cross_layer_s = min(
+            (
+                s
+                for s in self.super_block_holder
+                if s > 0  # super-block 0 is reserved
+                and s not in layer.pinned_super_blocks
+                and s not in layer.expert_at_super_block
+            ),
+            default=None,
+        )
+        if cross_layer_s is not None:
+            return cross_layer_s, "free-cross-layer-expert"
+
+        # A fully free super-block needs F pages that are both free and
+        # unhashed. prefix_lru holds exactly the free-queue pages that
+        # carry a hash, so the difference below counts the free-and-
+        # unhashed pages, both terms O(1). Under the threshold no such
+        # super-block can exist and the scan is provably pointless; at or
+        # above it we fall through to the original scan, so free-pure is
+        # unchanged wherever it could fire.
+        free_unhashed = (
+            self.block_pool.free_block_queue.num_free_blocks
+            - len(self.prefix_lru)
+        )
+        if free_unhashed < F:
+            PROFILER.count("free_pure_scan_skipped")
+            return self._evict_for_expert(layer, eid, needed_set)
+
+        PROFILER.count("free_pure_scan_ran")
         for s in range(1, ns):  # reserve super-block 0
             if s in layer.pinned_super_blocks:
                 continue
             if s in layer.expert_at_super_block:
                 continue
-            holders = self.super_block_holder.get(s)
-            if holders:
-                # Expert-held by other layer(s); mutual exclusion means
-                # no KV lives here, so this layer can co-locate its
-                # expert with zero eviction.
-                if cross_layer_s is None:
-                    cross_layer_s = s
+            if self.super_block_holder.get(s):
                 continue
-            # Holder empty: pages are free / cached-prefix / live.
+            # Holder empty: pages are free / cached-prefix / live. Either
+            # a live page or a cached prefix disqualifies the super-block,
+            # so the first of them settles it.
             base = s * F
-            has_prefix = False
-            has_live = False
             for p in range(base, base + F):
                 b = blocks[p]
-                if b.ref_cnt > 0:
-                    has_live = True
+                if b.ref_cnt > 0 or b.block_hash is not None:
                     break
-                if b.block_hash is not None:
-                    has_prefix = True
-            if has_live:
-                continue
-            if not has_prefix and free_pure_s is None:
-                free_pure_s = s
-
-        # Prefer packing experts onto an already-expert super-block; it
-        # keeps whole super-blocks free for KV (less fragmentation).
-        if cross_layer_s is not None:
-            return cross_layer_s, "free-cross-layer-expert"
-        if free_pure_s is not None:
-            return free_pure_s, "free-pure"
+            else:
+                return s, "free-pure"
 
         return self._evict_for_expert(layer, eid, needed_set)
 

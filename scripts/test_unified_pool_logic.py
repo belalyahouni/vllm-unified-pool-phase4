@@ -852,6 +852,29 @@ def check_invariants(m, bp, step_desc):
             blk.ref_cnt,
             in_q,
         )
+    # (4b) The free-pure guard in _select_super_block_for_expert skips its
+    # scan when num_free_blocks - len(prefix_lru) < F, on the assumption
+    # that prefix_lru is exactly the hashed subset of the free queue, so
+    # the difference counts free-and-unhashed pages. If that drifted the
+    # guard could skip a scan that would have found a free super-block, so
+    # check it against a recomputed count.
+    recomputed = sum(
+        1
+        for p, blk in enumerate(bp.blocks)
+        if not blk.is_null
+        and blk.ref_cnt == 0
+        and blk.block_hash is None
+        and bp.free_block_queue.contains(p)
+    )
+    tracked = bp.free_block_queue.num_free_blocks - len(m.prefix_lru)
+    assert tracked == recomputed, (
+        step_desc,
+        "free_unhashed drift",
+        tracked,
+        recomputed,
+        bp.free_block_queue.num_free_blocks,
+        len(m.prefix_lru),
+    )
     # (5) DMA delivered right expert content
     for li, layer in m.layers.items():
         for e, s in layer.super_block_at_expert.items():

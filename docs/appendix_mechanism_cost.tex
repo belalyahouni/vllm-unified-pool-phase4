@@ -1,10 +1,12 @@
 % Appendix section: cost of cross-type eviction.
 % Place after \appendix; reference from the main text as Appendix~\ref{app:cost}.
 %
-% PROVISIONAL: the relocation count and its share of run time are scaled
-% estimates from a shorter traced run (60 expert requests, 5845
-% relocations, scaled to the reported 220). A profiled run at the reported
-% length is in progress; replace both figures with its counts.
+% Relocation count and share of run time are measured, from the profiled
+% kv2exp run at the reported length (Nexp=220): 6866 pages relocated,
+% 812.99 ms of GPU copy time, over 2057.08 s of benchmark wall clock
+% (796.69 + 4.05 + 1256.34). The run-level relocation and expert-load
+% latencies there (0.118 ms, 0.956 ms) corroborate the microbenchmark
+% figures in the table below.
 
 \appendix
 
@@ -44,9 +46,8 @@ page is cheap next to the transfer that displaces it.
 
 In aggregate the cost stays small even though the mechanism is busy. Over
 the shift from the KV-heavy to the expert-heavy phase, the pool relocated
-about $21{,}000$ pages, which accounts for $0.1\%$ of that
-run.\footnote{Provisional: scaled from a traced run with a shorter expert
-phase, pending a directly profiled run.} The reported speedup is
+$6{,}866$ pages, which accounts for under $0.1\%$ of that run. The
+reported speedup is
 end-to-end wall-clock time measured with the mechanism running, so this
 cost is inside that number rather than additional to it.
 
