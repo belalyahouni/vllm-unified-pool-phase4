@@ -491,7 +491,16 @@ def add_prefix(manager, block_pool, block_id, block_hash, step):
     manager.prefix_lru[block_id] = step
 
 
-def test_relocation_preserves_lru_order():
+def test_relocation_preserves_lru_recency():
+    """The destination inherits the source's recency, and is still found as
+    the coldest page.
+
+    This used to assert prefix_lru's dict order, which relocation kept
+    sorted by re-sorting every entry on every moved page -- O(n log n) per
+    page. Nothing reads that order (every consumer compares step values
+    explicitly), so the re-sort is gone and the invariant is asserted where
+    it actually matters: the recency value, and the selection it drives.
+    """
     block_pool = FakeBlockPool(6)
     manager = make_manager(block_pool, 1, 1, 2)
     add_prefix(manager, block_pool, 1, 101, 2)
@@ -500,7 +509,9 @@ def test_relocation_preserves_lru_order():
 
     manager._relocate_kv_page(1, 4)
 
-    assert list(manager.prefix_lru.items()) == [(4, 2), (2, 8), (3, 10)]
+    assert dict(manager.prefix_lru) == {4: 2, 2: 8, 3: 10}
+    # Order-independent: the relocated page is still the coldest.
+    assert manager._coldest_prefix_page(exclude_super_block=0, colder_than=1 << 30) == 4
 
 
 def test_kv_victim_uses_oldest_timestamp():
@@ -745,7 +756,7 @@ def run_deterministic_tests():
     test_equal_working_sets_keep_full_target()
     test_copy_page_covers_attention_only_layers()
     test_copy_waits_for_prior_compute_writes()
-    test_relocation_preserves_lru_order()
+    test_relocation_preserves_lru_recency()
     test_kv_victim_uses_oldest_timestamp()
     test_expert_miss_prefers_coldest_filled_super_block()
     test_expert_miss_avoids_warm_super_block_when_full()

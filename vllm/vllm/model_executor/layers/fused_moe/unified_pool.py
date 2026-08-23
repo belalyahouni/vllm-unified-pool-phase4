@@ -517,18 +517,38 @@ class UnifiedPoolManager:
         # Relocate warmest-first: warm pages grab holes first, so if holes
         # run out the pages evicted in place are the coldest.
         prefix_pages.sort(key=lambda p: self.prefix_lru.get(p, -1), reverse=True)
+
+        # Gather the two global quantities once. Previously each page
+        # re-walked the free queue and rescanned all of prefix_lru, making
+        # a vacate O(pages * pool) -- 29.9 ms at 95% KV occupancy.
+        holes = self._collect_free_pages(
+            exclude_super_block=super_block_id, limit=len(prefix_pages)
+        )
+        cold_first = self._displaceable_pages_coldest_first(
+            exclude_super_block=super_block_id
+        )
+        hole_i = 0
+        cand_i = 0
+
         for p in prefix_pages:
             warmth = self.prefix_lru.get(p, -1)
-            hole = self._first_free_page(exclude_super_block=super_block_id)
-            if hole is None:
-                # No free page: make one by evicting a page colder than p
-                # from a different super-block.
-                victim = self._coldest_prefix_page(
-                    exclude_super_block=super_block_id, colder_than=warmth
-                )
-                if victim is not None:
+            hole: int | None = None
+            if hole_i < len(holes):
+                hole = holes[hole_i]
+                hole_i += 1
+            elif cand_i < len(cold_first):
+                # Make a hole by evicting a strictly colder page elsewhere.
+                # Pages run warmest-first and candidates coldest-first, so
+                # once the coldest remaining candidate is not colder than p
+                # it cannot be colder than any later (colder) p either --
+                # nothing displaceable is left for the rest of the loop.
+                victim, victim_step = cold_first[cand_i]
+                if victim_step < warmth:
+                    cand_i += 1
                     self._evict_prefix_globally(victim, cause=cause, tier="make-hole")
                     hole = victim
+                else:
+                    cand_i = len(cold_first)
             if hole is not None:
                 self._relocate_kv_page(p, hole)
             else:
@@ -536,12 +556,39 @@ class UnifiedPoolManager:
                 # displace — so evict it in place.
                 self._evict_prefix_globally(p, cause=cause, tier="kv-vacate-evict")
 
-    @PROFILER.timed("first_free_page")
-    def _first_free_page(self, exclude_super_block: int) -> int | None:
-        """A pure-free page (no hash, super-block not expert-held, not
-        pinned) outside ``exclude_super_block``, usable as a relocation
-        destination. Not removed from the free queue — after relocation it
-        becomes a cached-prefix page that stays in the queue."""
+    def _displaceable_pages_coldest_first(
+        self, exclude_super_block: int
+    ) -> list[tuple[int, int]]:
+        """(page, step) for every cached prefix page that could be evicted
+        to make a hole, coldest first.
+
+        One pass over prefix_lru plus a sort, so a vacate can consume holes
+        in order instead of rescanning for the coldest page per page moved.
+        """
+        out = [
+            (p, step)
+            for p, step in self.prefix_lru.items()
+            if self._super_block_of_page(p) != exclude_super_block
+            and not self._any_layer_pins_super_block(self._super_block_of_page(p))
+        ]
+        out.sort(key=lambda item: item[1])
+        return out
+
+    @PROFILER.timed("collect_free_pages")
+    def _collect_free_pages(
+        self, exclude_super_block: int, limit: int
+    ) -> list[int]:
+        """Up to ``limit`` pure-free pages (no hash, super-block not
+        expert-held, not pinned) outside ``exclude_super_block``, usable as
+        relocation destinations, in free-queue order.
+
+        Not removed from the free queue — after relocation a page becomes a
+        cached-prefix page that stays in the queue, and its hash then
+        excludes it from any later call.
+        """
+        out: list[int] = []
+        if limit <= 0:
+            return out
         queue = self.block_pool.free_block_queue
         cursor = queue.fake_free_list_head.next_free_block
         while cursor is not None and cursor is not queue.fake_free_list_tail:
@@ -553,9 +600,16 @@ class UnifiedPoolManager:
                     and not self.super_block_holder.get(s)
                     and not self._any_layer_pins_super_block(s)
                 ):
-                    return cursor.block_id
+                    out.append(cursor.block_id)
+                    if len(out) >= limit:
+                        return out
             cursor = nxt
-        return None
+        return out
+
+    def _first_free_page(self, exclude_super_block: int) -> int | None:
+        """The first usable relocation destination, or None."""
+        found = self._collect_free_pages(exclude_super_block, limit=1)
+        return found[0] if found else None
 
     @PROFILER.timed("coldest_prefix_page")
     def _coldest_prefix_page(
@@ -606,11 +660,12 @@ class UnifiedPoolManager:
         self.prefix_lru.pop(src_id, None)
         self.prefix_lru.pop(dst_id, None)
         self.prefix_lru[dst_id] = src_step
-        # Full re-sort of every prefix entry on every relocated page.
-        with PROFILER.cpu("prefix_lru_resort"):
-            self.prefix_lru = OrderedDict(
-                sorted(self.prefix_lru.items(), key=lambda item: item[1])
-            )
+        # No re-sort: dst carries src's step, so the dict's insertion order
+        # no longer tracks recency -- but nothing reads it that way. Every
+        # consumer (_coldest_prefix_page, _pick_one_kv_victim,
+        # _cheapest_kv_super_block, _displaceable_pages_coldest_first)
+        # compares step values explicitly. Re-sorting all entries on every
+        # relocated page was O(n log n) per page for no benefit.
         self.relocations += 1
         if _trace_enabled():
             print(
@@ -1341,7 +1396,9 @@ class UnifiedPoolManager:
             flush=True,
         )
 
-        prefix_items = list(reversed(self.prefix_lru.items()))[:8]
+        # Sort explicitly: insertion order is not recency order, because
+        # relocation reinserts a page carrying its old step.
+        prefix_items = sorted(self.prefix_lru.items(), key=lambda kv: -kv[1])[:8]
         prefix_lru_str = ", ".join(f"p{bid}#step{step}" for bid, step in prefix_items)
         print(
             f"UNIFIED PREFIX_LRU MRU→LRU "
