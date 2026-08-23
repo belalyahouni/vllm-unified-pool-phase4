@@ -117,20 +117,64 @@ layers), exactly as expected.
 `tight_exp_reloc0` was killed mid-benchmark and is partial — do not
 compare it against `tight_exp_reloc1`.
 
-## 4. Consequences for the paper
+## 4. The fix (commit `bf9cd3a`)
+
+`_evict_for_expert` no longer scores every super-block. `_cheapest_kv_super_block`
+walks `prefix_lru` once — the pages that exist, not every block in the pool —
+tallying per super-block how many prefix pages it holds and how cold its
+oldest page is, then tries candidates cheapest-first ("fewest pages to
+move" as a proxy for "fewest relocations"), applying the validity checks
+only as each candidate is tried.
+
+Relocation is untouched: `_vacate_kv_super_block` and `_relocate_kv_page`
+still move warm pages into scattered holes and kill only the coldest.
+
+Cost of one expert miss (`evict_for_expert`, µs, same pod, 20 reps):
+
+| KV frac | before | after | speedup |
+|---|---|---|---|
+| 0.00 | 831 | **21.9** | 38x |
+| 0.25 | 20,605 | **150.8** | 137x |
+| 0.50 | 62,875 | **296.1** | 212x |
+| 0.75 | 129,353 | **444.1** | 291x |
+| 0.95 | **197,211** | **550.3** | **358x** |
+
+The decision now costs ~0.55 ms against the 0.95 ms DMA it schedules,
+instead of 197 ms — the right order of magnitude for scheduling a 12 MiB
+copy.
+
+Two deliberate consequences:
+
+* The proxy can pick a super-block needing an extra page move. A move is
+  0.116 ms, so up to ~1,700 extra moves would still beat one old planning
+  pass.
+* The mixed-LRU score is now the chosen super-block's *oldest* page rather
+  than its warmest, so the comparison is oldest-expert vs oldest-KV — what
+  the Method section describes. The old warmest-page score made KV look
+  warmer than it was and biased the decision toward evicting experts.
+
+Verified: the fuzzer passes 400 seeds with the **identical 645
+relocations**, deterministic regressions pass, 25 unit tests pass.
+
+Next remaining term is `vacate_kv_super_block` (25.5 ms at 95% KV), which
+is genuine work — per-page hole finding via `_first_free_page` and
+`_coldest_prefix_page` — rather than discarded planning. It only runs when
+KV actually loses the comparison.
+
+## 5. Consequences for the paper
 
 1. **The overhead claim in future work needs rewriting.** "Making experts
    non-contiguous would remove the relocation overhead, leaving only page
    tracking" is measurably the wrong emphasis: relocation is 0.116 ms/page
-   and 1/8th of one expert load, while the victim search is 197 ms/miss.
+   and 1/8th of one expert load, while the victim search was 197 ms/miss
+   -- and is now 0.55 ms after a pure bookkeeping change (section 4), with
+   contiguity and the kernel untouched.
 2. **The result is stronger than it looks.** The 1.48x under workload
    shift is achieved *while paying* up to ~197 ms of avoidable Python per
    expert miss in exactly the phase the shift creates (a KV-full pool
    taking expert misses). That overhead is not fundamental to the design.
-3. **The cheapest real optimisation is bookkeeping, not layout.**
-   Maintaining incremental per-super-block cost state instead of rescanning
-   every block on every miss should remove most of the 197 ms without
-   touching the kernel or the contiguity requirement.
+3. **The cheapest real optimisation was bookkeeping, not layout** --
+   now done, 358x, kernel and contiguity untouched (section 4).
 4. **Page size is a real knob with a real cost.** F=96 gives 18 GiB/s on
    relocation vs 117 GiB/s at F=6, for identical latency. Worth a sentence.
 

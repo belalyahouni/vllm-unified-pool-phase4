@@ -1,0 +1,135 @@
+{
+  "args": {
+    "part": "cpu",
+    "expert_bytes": 12582912,
+    "pages_per_super_block": 96,
+    "layers": 16,
+    "super_blocks": 67,
+    "num_experts": 64,
+    "reps": 200,
+    "cpu_reps": 20,
+    "mut_reps": 20,
+    "warm_frac": 0.5,
+    "kv_fracs": [
+      0.0,
+      0.25,
+      0.5,
+      0.75,
+      0.95
+    ],
+    "f_sweep": [
+      1,
+      6,
+      24,
+      96,
+      384
+    ],
+    "json": "/root/microbench_after.json"
+  },
+  "cpu": {
+    "config": {
+      "M": 67,
+      "F": 96,
+      "layers": 16,
+      "num_experts": 64,
+      "num_blocks": 6432
+    },
+    "rows": [
+      {
+        "kv_frac": 0.0,
+        "kv_super_blocks": 1,
+        "warm_pages_per_sb": 48,
+        "prefix_pages": 48,
+        "expert_super_blocks": 64,
+        "read_only_us": {
+          "cheapest_kv_super_block": 11.864863336086273,
+          "oldest_global_expert": 109.7947359085083,
+          "coldest_prefix_page": 18.948130309581757,
+          "first_free_page": 9.017623960971832
+        },
+        "mutating_us": {
+          "vacate_kv_super_block": 477.8752103447914,
+          "select_kv_victim": 3.1700357794761658,
+          "evict_for_expert": 21.914765238761902
+        },
+        "relocations_per_vacate": null
+      },
+      {
+        "kv_frac": 0.25,
+        "kv_super_blocks": 16,
+        "warm_pages_per_sb": 48,
+        "prefix_pages": 768,
+        "expert_super_blocks": 50,
+        "read_only_us": {
+          "cheapest_kv_super_block": 137.63420283794403,
+          "oldest_global_expert": 86.02328598499298,
+          "coldest_prefix_page": 311.6412088274956,
+          "first_free_page": 8.609890937805176
+        },
+        "mutating_us": {
+          "vacate_kv_super_block": 5737.2670620679855,
+          "select_kv_victim": 2.7611851692199707,
+          "evict_for_expert": 150.7909968495369
+        },
+        "relocations_per_vacate": null
+      },
+      {
+        "kv_frac": 0.5,
+        "kv_super_blocks": 33,
+        "warm_pages_per_sb": 48,
+        "prefix_pages": 1584,
+        "expert_super_blocks": 33,
+        "read_only_us": {
+          "cheapest_kv_super_block": 288.2041037082672,
+          "oldest_global_expert": 56.95223808288574,
+          "coldest_prefix_page": 665.4687225818634,
+          "first_free_page": 8.682534098625183
+        },
+        "mutating_us": {
+          "vacate_kv_super_block": 9934.641234576702,
+          "select_kv_victim": 3.133155405521393,
+          "evict_for_expert": 296.1082383990288
+        },
+        "relocations_per_vacate": null
+      },
+      {
+        "kv_frac": 0.75,
+        "kv_super_blocks": 50,
+        "warm_pages_per_sb": 48,
+        "prefix_pages": 2400,
+        "expert_super_blocks": 16,
+        "read_only_us": {
+          "cheapest_kv_super_block": 428.2914102077484,
+          "oldest_global_expert": 27.38106995820999,
+          "coldest_prefix_page": 963.6444970965385,
+          "first_free_page": 8.88872891664505
+        },
+        "mutating_us": {
+          "vacate_kv_super_block": 15295.444056391716,
+          "select_kv_victim": 2.987496554851532,
+          "evict_for_expert": 444.0603777766228
+        },
+        "relocations_per_vacate": null
+      },
+      {
+        "kv_frac": 0.95,
+        "kv_super_blocks": 63,
+        "warm_pages_per_sb": 48,
+        "prefix_pages": 3024,
+        "expert_super_blocks": 3,
+        "read_only_us": {
+          "cheapest_kv_super_block": 532.9420790076256,
+          "oldest_global_expert": 5.03193587064743,
+          "coldest_prefix_page": 1188.5764077305794,
+          "first_free_page": 8.840300142765045
+        },
+        "mutating_us": {
+          "vacate_kv_super_block": 25461.413897573948,
+          "select_kv_victim": 2.9727816581726074,
+          "evict_for_expert": 550.2967163920403
+        },
+        "relocations_per_vacate": null
+      }
+    ]
+  }
+}
