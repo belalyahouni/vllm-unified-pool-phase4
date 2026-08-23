@@ -484,6 +484,14 @@ class UnifiedPool:
 
     @property
     def working_set_ready(self) -> bool:
+        # A non-positive window disables working-set tracking, so it is
+        # never "ready". Without this, window=0 reported ready with an
+        # empty window, giving an expert target of 0 -- and since the
+        # footprint always meets a target of 0, every miss was forced down
+        # the expert-local branch and the expert-vs-KV comparison never
+        # ran. The off switch was the most aggressive setting.
+        if self.working_set_window <= 0:
+            return False
         return len(self.recent_expert_sets) == self.working_set_window
 
     @property

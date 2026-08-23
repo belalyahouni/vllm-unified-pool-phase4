@@ -436,6 +436,23 @@ def test_rolling_working_set_tracks_recent_experts():
     assert pool.working_set_size == 3
 
 
+def test_zero_window_disables_adaptive_target():
+    """A non-positive window must mean "off", not "target 0".
+
+    With window=0 nothing is recorded, so a length check against the
+    window reported ready with an empty window and produced a target of 0.
+    Since the footprint always meets a target of 0, every expert miss was
+    forced down the expert-local branch and the expert-vs-KV comparison
+    never ran -- which suppressed cross-type eviction entirely.
+    """
+    manager = make_manager(FakeBlockPool(8), 1, 2, 8)
+    for layer in manager.layers.values():
+        layer.working_set_window = 0
+        layer.record_expert_accesses([0, 1])
+        assert not layer.working_set_ready
+    assert manager._adaptive_expert_target() is None
+
+
 def test_adaptive_target_is_mean_working_set():
     manager = make_manager(FakeBlockPool(8), 1, 2, 8)
     for layer in manager.layers.values():
@@ -755,6 +772,7 @@ def test_inactive_page_tokens_are_not_validated():
 def run_deterministic_tests():
     test_manager_has_page_size()
     test_rolling_working_set_tracks_recent_experts()
+    test_zero_window_disables_adaptive_target()
     test_adaptive_target_is_mean_working_set()
     test_equal_working_sets_keep_full_target()
     test_copy_page_covers_attention_only_layers()
