@@ -52,6 +52,18 @@ logger = init_logger(__name__)
 # times per request. Levels: 0/unset = off, 1 = essential lines only
 # (composition, evict, kv_claim, prefix add/remove, relocate), 2 = also
 # dump step headers and the LRU snapshots (debug only, slow).
+# Which recency a candidate KV super-block is scored by when weighed
+# against an expert on an expert miss.
+#   "warmest" (default) -- its warmest cached page, the anti-starvation
+#     bias from commit 25a42a4, which protects KV;
+#   "oldest" -- its coldest page, i.e. coldest-KV vs coldest-expert, which
+#     is how the paper words the policy.
+# Exposed so the two can be A/B'd on the same build.
+_KV_SCORE = os.environ.get("VLLM_UNIFIED_POOL_KV_SCORE", "warmest")
+assert _KV_SCORE in ("warmest", "oldest"), (
+    f"VLLM_UNIFIED_POOL_KV_SCORE must be warmest|oldest, got {_KV_SCORE!r}"
+)
+
 _TRACE_LEVEL = os.environ.get("VLLM_UNIFIED_POOL_TRACE", "0")
 _TRACE_ENABLED = _TRACE_LEVEL in ("1", "2")
 _TRACE_VERBOSE = _TRACE_LEVEL == "2"
@@ -1321,6 +1333,8 @@ class UnifiedPoolManager:
                     continue
                 if self._super_block_has_live_page(s):
                     continue
+                if _KV_SCORE == "oldest":
+                    return s, oldest[s]
                 return s, self._warmest_prefix_step(s)
 
             if exhausted:

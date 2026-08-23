@@ -36,6 +36,8 @@ L=${L:-/root/code8_logs}
 FWD=${FWD:-/root/code8_fwd.jsonl}
 REV=${REV:-/root/code8_rev.jsonl}
 NUM=${NUM:-8}
+# warmest (default, the anti-starvation bias) | oldest (paper wording).
+KVSCORE=${KVSCORE:-warmest}
 # Whitespace-separated whitelist of cell tags; empty runs all of them.
 CELLS=${CELLS:-}
 mkdir -p "$R" "$L"
@@ -59,7 +61,8 @@ gpu_clean(){ local i u n p
   log "  WARN gpu not clean"; return 1; }
 
 boot(){ local extra="$1" blog="$2" i
-  env VLLM_UNIFIED_POOL_TRACE=0 setsid $SERVE --model "$MODEL" --port "$PORT" \
+  env VLLM_UNIFIED_POOL_TRACE=0 VLLM_UNIFIED_POOL_KV_SCORE="$KVSCORE" \
+      setsid $SERVE --model "$MODEL" --port "$PORT" \
       $extra $ENVF > "$blog" 2>&1 &
   BOOTPID=$!
   for i in $(seq 1 300); do
@@ -101,7 +104,7 @@ cell(){ local tag=$1 flags=$2
 
 M67="--num-gpu-blocks-override 6432 --expert-pool-page-tokens 16"
 
-log "===== CODE8 START ====="
+log "===== CODE8 START ===== (NUM=$NUM KVSCORE=$KVSCORE)"
 # Unified with the adaptive target OFF. The handoff's best unified numbers
 # came from this configuration, and its own conclusion was that the
 # adaptive target "should not be treated as the solution".
