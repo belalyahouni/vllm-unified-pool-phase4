@@ -159,11 +159,11 @@ def test_decorator_preserves_metadata_and_return(prof_on):
 def test_known_timers_get_nesting_depth(prof_on):
     p = prof_on.PoolProfiler(enabled=True)
     with p.cpu("ensure_loaded"):
-        with p.cpu("kv_cost_sweep"):
+        with p.cpu("cheapest_kv_super_block"):
             pass
     cpu = p.report()["cpu"]
     assert cpu["ensure_loaded"]["depth"] == 0
-    assert cpu["kv_cost_sweep"]["depth"] == 3
+    assert cpu["cheapest_kv_super_block"]["depth"] == 2
 
 
 def test_gpu_events_accumulate_time_and_bytes(prof_on):

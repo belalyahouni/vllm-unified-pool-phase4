@@ -9,11 +9,11 @@ end-to-end latency:
 * ``gpu`` — the byte movement: expert HtoD DMA out of pinned host memory,
   and the device-to-device page copies that relocation performs. Measured
   with CUDA events on the transfer stream.
-* ``cpu`` — the Python victim-selection logic (the super-block cost
-  sweep, the prefix scans, the prefix_lru re-sort). Measured with
+* ``cpu`` — the Python victim-selection logic (candidate selection, the
+  prefix-recency queries, vacating a super-block). Measured with
   ``perf_counter``. This is the bucket the design discussion assumes is
-  free, and the one that scales as O(num_super_blocks * num_blocks) per
-  expert miss.
+  free, and the one that dominated before the recency list made the
+  ordered queries O(1).
 * ``counts`` — how often each path fires, so a per-event mean can be
   derived and the buckets can be normalised per miss.
 
@@ -25,7 +25,7 @@ pairs are drained opportunistically and the remainder resolved once at
 report time.
 
 CPU timers nest (``ensure_loaded`` contains ``select_super_block``
-contains ``evict_for_expert`` contains ``kv_cost_sweep``), so times are
+contains ``evict_for_expert`` contains ``cheapest_kv_super_block``), so times are
 *inclusive* and must not be summed across levels. ``report()`` tags each
 timer with its nesting depth so a reader cannot accidentally double count.
 """
@@ -57,12 +57,12 @@ _TIMER_DEPTH = {
     "ensure_loaded": 0,
     "select_super_block": 1,
     "evict_for_expert": 2,
-    "kv_cost_sweep": 3,
+    "cheapest_kv_super_block": 2,
     "vacate_kv_super_block": 3,
     "first_free_page": 4,
     "coldest_prefix_page": 4,
     "relocate_page": 4,
-    "prefix_lru_resort": 5,
+    "collect_free_pages": 4,
     "select_kv_victim": 0,
     "pick_kv_victim": 1,
     "oldest_global_expert": 2,

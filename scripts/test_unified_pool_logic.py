@@ -386,7 +386,7 @@ def make_manager(block_pool, F, num_layers, num_experts):
     m.super_block_holder = {}
     m.transfer_stream = SimpleNamespace(wait_stream=lambda stream: None)
     m.step = 0
-    m.prefix_lru = OrderedDict()
+    m.prefix_lru = up.PrefixLRU()
     m._relocation_enabled = True
     m.relocations = 0
     m._expert_content = {}  # (layer_idx, super_block) -> expert_id
@@ -488,7 +488,7 @@ def add_prefix(manager, block_pool, block_id, block_hash, step):
     block = block_pool.blocks[block_id]
     block.block_hash = block_hash
     block_pool.cached_block_hash_to_block.insert(block_hash, block)
-    manager.prefix_lru[block_id] = step
+    manager.prefix_lru.insert_ordered(block_id, step)
 
 
 def test_relocation_preserves_lru_recency():
@@ -509,7 +509,10 @@ def test_relocation_preserves_lru_recency():
 
     manager._relocate_kv_page(1, 4)
 
-    assert dict(manager.prefix_lru) == {4: 2, 2: 8, 3: 10}
+    assert dict(manager.prefix_lru.items()) == {4: 2, 2: 8, 3: 10}
+    # Order is now real, not merely value-correct: coldest first.
+    assert list(manager.prefix_lru.items()) == [(4, 2), (2, 8), (3, 10)]
+    manager.prefix_lru.validate()
     # Order-independent: the relocated page is still the coldest.
     assert manager._coldest_prefix_page(exclude_super_block=0, colder_than=1 << 30) == 4
 
@@ -772,6 +775,15 @@ def run_deterministic_tests():
 # ------------------------------ invariants ---------------------------------
 def check_invariants(m, bp, step_desc):
     F = m.pages_per_super_block
+    # (0) the recency list itself: links intact, map agrees with the list,
+    # and steps non-decreasing from head to tail. Policed every step so a
+    # relocation that corrupted ordering could not pass silently.
+    m.prefix_lru.validate()
+    for page in m.prefix_lru._nodes:
+        assert bp.blocks[page].block_hash is not None, (
+            step_desc,
+            f"page {page} in prefix_lru but has no hash",
+        )
     # (1) bijection + mirror
     for li, layer in m.layers.items():
         assert len(layer.expert_at_super_block) == len(layer.super_block_at_expert)

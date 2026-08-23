@@ -32,7 +32,6 @@ call. No staging tensor, no extra GPU memory beyond the pool itself.
 
 from __future__ import annotations
 
-import heapq
 import os
 from collections import Counter, OrderedDict, deque
 from typing import TYPE_CHECKING
@@ -82,6 +81,220 @@ def move_experts_to_cpu(
     if not cpu_w2.is_pinned():
         cpu_w2 = cpu_w2.pin_memory()
     return cpu_w13, cpu_w2
+
+
+class _PrefixNode:
+    """One cached-prefix page's slot in the recency list."""
+
+    __slots__ = ("page", "step", "prev", "next")
+
+    def __init__(self, page: int, step: int) -> None:
+        self.page = page
+        self.step = step
+        self.prev: _PrefixNode | None = None
+        self.next: _PrefixNode | None = None
+
+
+class PrefixLRU:
+    """Recency-ordered set of cached-prefix KV pages.
+
+    An intrusive doubly-linked list from oldest (head) to newest (tail),
+    plus a page -> node dict. Traversal order *is* recency order, so "the
+    coldest page" is the head and "the coldest N pages" is N steps from the
+    head -- no scan and no sort.
+
+    This replaced an OrderedDict. The values were always correct there, but
+    the *ordering* was not: relocation gives a page a new address, and
+    re-keying a dict entry can only append, so a page that kept its old
+    recency landed in the newest slot. Every reader therefore had to
+    distrust the order and scan all entries to find the true oldest, and
+    the original code re-sorted every entry after each relocated page to
+    repair it. Here ``rename`` swaps the page id on a node that never
+    moves, so recency and position cannot disagree and neither the scans
+    nor the re-sort are needed.
+
+    Invariant: steps are non-decreasing from head to tail. ``touch`` stamps
+    with the current step (which only increases) and moves to the tail;
+    ``rename`` changes neither step nor position.
+    """
+
+    __slots__ = ("_nodes", "_head", "_tail")
+
+    def __init__(self) -> None:
+        self._nodes: dict[int, _PrefixNode] = {}
+        self._head: _PrefixNode | None = None  # oldest
+        self._tail: _PrefixNode | None = None  # newest
+
+    # -- list plumbing --
+
+    def _unlink(self, node: _PrefixNode) -> None:
+        if node.prev is not None:
+            node.prev.next = node.next
+        else:
+            self._head = node.next
+        if node.next is not None:
+            node.next.prev = node.prev
+        else:
+            self._tail = node.prev
+        node.prev = node.next = None
+
+    def _append(self, node: _PrefixNode) -> None:
+        node.prev = self._tail
+        node.next = None
+        if self._tail is not None:
+            self._tail.next = node
+        else:
+            self._head = node
+        self._tail = node
+
+    # -- mapping-style access --
+
+    def __len__(self) -> int:
+        return len(self._nodes)
+
+    def __bool__(self) -> bool:
+        return bool(self._nodes)
+
+    def __contains__(self, page: int) -> bool:
+        return page in self._nodes
+
+    def get(self, page: int, default=None):
+        node = self._nodes.get(page)
+        return default if node is None else node.step
+
+    def __getitem__(self, page: int) -> int:
+        return self._nodes[page].step
+
+    def items(self):
+        """(page, step) oldest first. Safe to consume lazily only while the
+        list is not being mutated; callers that mutate must snapshot."""
+        node = self._head
+        while node is not None:
+            nxt = node.next
+            yield node.page, node.step
+            node = nxt
+
+    def values(self):
+        for _page, step in self.items():
+            yield step
+
+    # -- mutation --
+
+    def touch(self, page: int, step: int) -> None:
+        """Insert, or restamp an existing page, as the newest entry."""
+        node = self._nodes.get(page)
+        if node is None:
+            node = _PrefixNode(page, step)
+            self._nodes[page] = node
+        else:
+            node.step = step
+            self._unlink(node)
+        self._append(node)
+
+    def pop(self, page: int, default=None):
+        node = self._nodes.pop(page, None)
+        if node is None:
+            return default
+        self._unlink(node)
+        return node.step
+
+    def insert_ordered(self, page: int, step: int) -> None:
+        """Insert at the position ``step`` belongs at, not at the tail.
+
+        Production never needs this -- ``touch`` stamps with the current
+        step, which only increases, so appending keeps the order. It exists
+        for tests and benchmark setup, which construct a pool state by
+        adding pages with arbitrary steps and must not violate the
+        head-to-tail ordering invariant.
+        """
+        self.pop(page)
+        node = _PrefixNode(page, step)
+        self._nodes[page] = node
+        cursor = self._tail
+        while cursor is not None and cursor.step > step:
+            cursor = cursor.prev
+        if cursor is None:  # oldest: becomes the head
+            node.next = self._head
+            if self._head is not None:
+                self._head.prev = node
+            else:
+                self._tail = node
+            self._head = node
+            return
+        node.prev = cursor
+        node.next = cursor.next
+        if cursor.next is not None:
+            cursor.next.prev = node
+        else:
+            self._tail = node
+        cursor.next = node
+
+    def rename(self, src: int, dst: int, fallback_step: int) -> int:
+        """Move page identity src -> dst, keeping recency and position.
+
+        Relocation copies a page's bytes to a new address; it is the same
+        logical KV, neither used nor aged, so its slot must not move. If
+        src is absent (nothing to inherit) dst is inserted as newest with
+        ``fallback_step``. Returns the step dst ends up with.
+        """
+        self.pop(dst)  # dst must not be double-mapped
+        node = self._nodes.pop(src, None)
+        if node is None:
+            self.touch(dst, fallback_step)
+            return fallback_step
+        node.page = dst
+        self._nodes[dst] = node
+        return node.step
+
+    # -- ordered queries (the point of the structure) --
+
+    def oldest(self):
+        """(page, step) of the coldest entry, or None."""
+        node = self._head
+        return None if node is None else (node.page, node.step)
+
+    def coldest_first(self, limit: int | None = None):
+        """(page, step) from the cold end, at most ``limit`` entries."""
+        node = self._head
+        n = 0
+        while node is not None and (limit is None or n < limit):
+            nxt = node.next
+            yield node.page, node.step
+            node = nxt
+            n += 1
+
+    def newest_first(self, limit: int | None = None):
+        node = self._tail
+        n = 0
+        while node is not None and (limit is None or n < limit):
+            prv = node.prev
+            yield node.page, node.step
+            node = prv
+            n += 1
+
+    # -- self-check, used by the fuzzer --
+
+    def validate(self) -> None:
+        seen = 0
+        prev = None
+        node = self._head
+        while node is not None:
+            assert self._nodes.get(node.page) is node, (
+                f"PrefixLRU: node for page {node.page} not in the map"
+            )
+            assert node.prev is prev, f"PrefixLRU: broken prev link at {node.page}"
+            if prev is not None:
+                assert prev.step <= node.step, (
+                    f"PrefixLRU: steps out of order, {prev.page}#{prev.step} "
+                    f"before {node.page}#{node.step}"
+                )
+            prev = node
+            node = node.next
+            seen += 1
+        assert prev is self._tail, "PrefixLRU: tail does not terminate the list"
+        assert seen == len(self._nodes), (
+            f"PrefixLRU: {seen} linked nodes but {len(self._nodes)} mapped"
+        )
 
 
 class UnifiedPool:
@@ -336,7 +549,7 @@ class UnifiedPoolManager:
 
         # page/block_id -> last-used step, oldest first. Updated by the
         # BlockPool prefix callbacks below.
-        self.prefix_lru: OrderedDict[int, int] = OrderedDict()
+        self.prefix_lru = PrefixLRU()
 
         self.block_pool.register_on_allocation_callback(self._on_kv_allocation)
         self.block_pool.register_on_prefix_added_callback(self._on_prefix_added)
@@ -518,14 +731,14 @@ class UnifiedPoolManager:
         # run out the pages evicted in place are the coldest.
         prefix_pages.sort(key=lambda p: self.prefix_lru.get(p, -1), reverse=True)
 
-        # Gather the two global quantities once. Previously each page
-        # re-walked the free queue and rescanned all of prefix_lru, making
-        # a vacate O(pages * pool) -- 29.9 ms at 95% KV occupancy.
+        # Gather both once, and only as much as this vacate can consume.
+        # Previously each page re-walked the free queue and rescanned every
+        # prefix entry: O(pages * pool), 29.9 ms at 95% KV occupancy.
         holes = self._collect_free_pages(
             exclude_super_block=super_block_id, limit=len(prefix_pages)
         )
         cold_first = self._displaceable_pages_coldest_first(
-            exclude_super_block=super_block_id
+            exclude_super_block=super_block_id, limit=len(prefix_pages)
         )
         hole_i = 0
         cand_i = 0
@@ -557,21 +770,29 @@ class UnifiedPoolManager:
                 self._evict_prefix_globally(p, cause=cause, tier="kv-vacate-evict")
 
     def _displaceable_pages_coldest_first(
-        self, exclude_super_block: int
+        self, exclude_super_block: int, limit: int
     ) -> list[tuple[int, int]]:
-        """(page, step) for every cached prefix page that could be evicted
+        """The ``limit`` coldest cached prefix pages that could be evicted
         to make a hole, coldest first.
 
-        One pass over prefix_lru plus a sort, so a vacate can consume holes
-        in order instead of rescanning for the coldest page per page moved.
+        Walks the recency list from the cold end and stops once it has
+        enough, so it touches O(limit) entries rather than all of them, and
+        needs no sort because the list is already in recency order. Returned
+        as a snapshot list because the caller evicts and relocates pages
+        while consuming it.
         """
-        out = [
-            (p, step)
-            for p, step in self.prefix_lru.items()
-            if self._super_block_of_page(p) != exclude_super_block
-            and not self._any_layer_pins_super_block(self._super_block_of_page(p))
-        ]
-        out.sort(key=lambda item: item[1])
+        out: list[tuple[int, int]] = []
+        if limit <= 0:
+            return out
+        for page, step in self.prefix_lru.coldest_first():
+            s = self._super_block_of_page(page)
+            if s == exclude_super_block:
+                continue
+            if self._any_layer_pins_super_block(s):
+                continue
+            out.append((page, step))
+            if len(out) >= limit:
+                break
         return out
 
     @PROFILER.timed("collect_free_pages")
@@ -619,24 +840,20 @@ class UnifiedPoolManager:
         ``colder_than``, outside ``exclude_super_block`` and not pinned.
         Evicting it frees a hole for a warmer page being preserved.
 
-        Scans every prefix_lru entry (rather than trusting queue/insertion
-        order) because relocation can leave order and step value out of
-        sync.
+        The recency list runs coldest first, so the first entry that passes
+        the filters is the answer and the walk stops there. Entries at or
+        above ``colder_than`` end the walk: everything after them is warmer.
         """
-        best_p: int | None = None
-        best_step: int | None = None
-        for p, step in self.prefix_lru.items():
+        for page, step in self.prefix_lru.coldest_first():
             if step >= colder_than:
-                continue
-            s = self._super_block_of_page(p)
+                return None
+            s = self._super_block_of_page(page)
             if s == exclude_super_block:
                 continue
             if self._any_layer_pins_super_block(s):
                 continue
-            if best_step is None or step < best_step:
-                best_p = p
-                best_step = step
-        return best_p
+            return page
+        return None
 
     @PROFILER.timed("relocate_page")
     def _relocate_kv_page(self, src_id: int, dst_id: int) -> None:
@@ -652,20 +869,13 @@ class UnifiedPoolManager:
         single wait_stream barrier in ensure_loaded covers them.
         """
         self._copy_page_all_layers(src_id, dst_id)
-        src_step = self.prefix_lru.get(src_id, self.step)
         moved = self.block_pool.relocate_prefix_hash(src_id, dst_id)
         if not moved:
             return
-        # dst inherits src's recency (it holds the same, still-warm KV).
-        self.prefix_lru.pop(src_id, None)
-        self.prefix_lru.pop(dst_id, None)
-        self.prefix_lru[dst_id] = src_step
-        # No re-sort: dst carries src's step, so the dict's insertion order
-        # no longer tracks recency -- but nothing reads it that way. Every
-        # consumer (_coldest_prefix_page, _pick_one_kv_victim,
-        # _cheapest_kv_super_block, _displaceable_pages_coldest_first)
-        # compares step values explicitly. Re-sorting all entries on every
-        # relocated page was O(n log n) per page for no benefit.
+        # Same logical KV at a new address: dst keeps src's recency *and*
+        # its slot, so the list stays in true recency order and no reader
+        # has to scan or re-sort to find the coldest page.
+        src_step = self.prefix_lru.rename(src_id, dst_id, fallback_step=self.step)
         self.relocations += 1
         if _trace_enabled():
             print(
@@ -696,8 +906,7 @@ class UnifiedPoolManager:
         Returning to the free queue with a hash counts as a use, so
         prefix recency stamps it with the current step.
         """
-        self.prefix_lru[block_id] = self.step
-        self.prefix_lru.move_to_end(block_id, last=True)
+        self.prefix_lru.touch(block_id, self.step)
         if _trace_enabled():
             print(
                 f"UNIFIED PREFIX_ADDED p{block_id} step={self.step} "
@@ -1034,78 +1243,66 @@ class UnifiedPoolManager:
         """The cheapest super-block to vacate for an expert, plus the KV
         recency score to weigh against expert recency.
 
-        Candidates are ranked by how many *warm* pages they hold, fewest
-        first -- equivalently, by most cold pages, which is the rule the
-        paper states. Vacating a super-block puts its pages at risk: they
-        are relocated if a hole or a colder page exists to displace, and
-        dropped otherwise. Choosing the coldest-filled super-block
-        therefore minimises the warm KV exposed to that risk, and stays
-        meaningful whether or not the pool is full:
+        Ranked by *most cold pages*, the rule the paper states. Vacating a
+        super-block puts its pages at risk -- relocated if a hole or a
+        colder page exists to displace them, dropped otherwise -- so the
+        cheapest choice is the one whose contents are already coldest.
 
-        * not full: few pages at all, so few warm ones;
-        * full but mostly cold: 96 pages of which 80 are cold, 16 warm;
-        * full and warm: 90 warm, correctly avoided.
+        Only the cold end of the recency list is examined: at most F pages
+        are ever cleared, so the pages that matter are the coldest F. They
+        are tallied per super-block in one walk of F entries, which needs no
+        sort because the list is already in recency order. If none of those
+        candidates is currently vacatable (expert-held, pinned, or holding a
+        live page) the walk extends by another F and retries, so the answer
+        is never worse than the old exhaustive search -- it just stops early
+        in the normal case.
 
-        Note this ranks by *risk to warm KV*, not by number of copies: a
-        mostly-cold super-block can still cost more relocations than a
-        near-empty one, because cold pages are preserved too when holes are
-        available. At 0.116 ms per page copy that is the right trade.
-
-        Cold means "among the globally coldest ``pages_per_super_block``
-        prefix pages", mirroring ``_vacate_kv_super_block``, which drops a
-        page only when nothing colder exists elsewhere -- so the pages it
-        drops are the globally coldest. At most F pages are ever cleared,
-        hence that frontier and no tunable constant.
-
-        Everything comes out of one pass over ``prefix_lru`` -- the pages
-        that exist -- rather than the previous sweep, which computed the
-        exact relocation plan for every super-block and rescanned the whole
-        block array each time: O(num_super_blocks * num_blocks), measured
-        at 165 ms per miss at 95% KV occupancy. See docs/MECHANISM_COST.md.
+        This replaced a sweep that computed the exact relocation plan for
+        every super-block, rescanning the whole block array each time:
+        O(num_super_blocks * num_blocks), 197 ms per miss at 95% KV
+        occupancy. See docs/MECHANISM_COST.md.
 
         The returned score is the chosen super-block's *oldest* page, so
-        the caller compares oldest-expert against oldest-KV, matching the
-        mixed-LRU policy as described. The validity checks (not
-        expert-held, unpinned, no live page) are applied only to
-        candidates as they are tried, not to all of them up front.
+        the caller compares oldest-expert against oldest-KV.
         """
-        if not self.prefix_lru:
-            return None, None
-
-        # Cold frontier: the step of the F-th coldest prefix page. Pages at
-        # or below it are droppable, so they cost nothing to clear.
         F = self.pages_per_super_block
-        steps = self.prefix_lru.values()
-        if len(self.prefix_lru) <= F:
-            cold_frontier = max(steps)
-        else:
-            cold_frontier = heapq.nsmallest(F, steps)[-1]
-
-        warm: Counter[int] = Counter()
+        cold_count: Counter[int] = Counter()
         oldest: dict[int, int] = {}
-        for p, step in self.prefix_lru.items():
-            s = self._super_block_of_page(p)
-            if step > cold_frontier:
-                warm[s] += 1
-            elif s not in warm:
-                warm[s] = 0  # candidate with only cold pages: free to clear
-            prev = oldest.get(s)
-            if prev is None or step < prev:
-                oldest[s] = step
-        if not warm:
-            return None, None
+        walker = self.prefix_lru.coldest_first()
+        seen = 0
+        horizon = F
 
-        for s, _n in sorted(warm.items(), key=lambda kv: (kv[1], oldest[kv[0]])):
-            if s == 0:  # reserved: holds BlockPool's null page
-                continue
-            if self.super_block_holder.get(s):
-                continue
-            if self._any_layer_pins_super_block(s):
-                continue
-            if self._super_block_has_live_page(s):
-                continue
-            return s, oldest[s]
-        return None, None
+        while True:
+            exhausted = True
+            for page, step in walker:
+                s = self._super_block_of_page(page)
+                cold_count[s] += 1
+                if s not in oldest:
+                    # First sighting: the list runs coldest-first, so this
+                    # is s's coldest page.
+                    oldest[s] = step
+                seen += 1
+                if seen >= horizon:
+                    exhausted = False
+                    break
+
+            # Most cold pages first, coldest page breaking ties.
+            for s, _n in sorted(
+                cold_count.items(), key=lambda kv: (-kv[1], oldest[kv[0]])
+            ):
+                if s == 0:  # reserved: holds BlockPool's null page
+                    continue
+                if self.super_block_holder.get(s):
+                    continue
+                if self._any_layer_pins_super_block(s):
+                    continue
+                if self._super_block_has_live_page(s):
+                    continue
+                return s, oldest[s]
+
+            if exhausted:
+                return None, None
+            horizon = seen + F
 
     # KV-side victim selection (no layer of origin).
 
@@ -1194,15 +1391,17 @@ class UnifiedPoolManager:
         # Tier 2: pick whichever LRU has the colder head.
         oldest_expert_s, oldest_expert_step = self._oldest_global_expert()
 
+        # Coldest unpinned prefix page. The recency list runs coldest
+        # first, so this stops at the first candidate instead of scanning
+        # every entry to find the minimum.
         oldest_prefix_bid: int | None = None
         oldest_prefix_step: int | None = None
-        for block_id, step in self.prefix_lru.items():
-            s = self._super_block_of_page(block_id)
-            if self._any_layer_pins_super_block(s):
+        for block_id, step in self.prefix_lru.coldest_first():
+            if self._any_layer_pins_super_block(self._super_block_of_page(block_id)):
                 continue
-            if oldest_prefix_step is None or step < oldest_prefix_step:
-                oldest_prefix_bid = block_id
-                oldest_prefix_step = step
+            oldest_prefix_bid = block_id
+            oldest_prefix_step = step
+            break
 
         target = self._adaptive_expert_target()
         if (
@@ -1396,9 +1595,7 @@ class UnifiedPoolManager:
             flush=True,
         )
 
-        # Sort explicitly: insertion order is not recency order, because
-        # relocation reinserts a page carrying its old step.
-        prefix_items = sorted(self.prefix_lru.items(), key=lambda kv: -kv[1])[:8]
+        prefix_items = list(self.prefix_lru.newest_first(limit=8))
         prefix_lru_str = ", ".join(f"p{bid}#step{step}" for bid, step in prefix_items)
         print(
             f"UNIFIED PREFIX_LRU MRU→LRU "
