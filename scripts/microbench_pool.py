@@ -37,6 +37,7 @@ Defaults match the measured OLMoE-1B-7B configuration: expert_slot_bytes
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import os
 import statistics
@@ -245,10 +246,15 @@ def bench_cpu(args):
             reps = args.cpu_reps
             for _ in range(3):
                 fn()
-            t0 = time.perf_counter()
-            for _ in range(reps):
-                fn()
-            ro[name] = (time.perf_counter() - t0) / reps * 1e6  # us
+            gc.collect()
+            gc.disable()
+            try:
+                t0 = time.perf_counter()
+                for _ in range(reps):
+                    fn()
+                ro[name] = (time.perf_counter() - t0) / reps * 1e6  # us
+            finally:
+                gc.enable()
 
         # --- mutating functions: rebuild state for every call ---
         mut = {}
@@ -263,17 +269,26 @@ def bench_cpu(args):
                 else:
                     layer0 = mm.layers[0]
                     call = lambda: mm._evict_for_expert(layer0, 999, set())
-                t0 = time.perf_counter()
+                # Building a fresh pool state per rep churns the heap, so
+                # collect first and keep the collector out of the timed
+                # region; report the median so any residual pause does not
+                # move the figure.
+                gc.collect()
+                gc.disable()
                 try:
+                    t0 = time.perf_counter()
                     call()
+                    samples.append((time.perf_counter() - t0) * 1e6)
                 except Exception:
                     samples = []
                     break
-                samples.append((time.perf_counter() - t0) * 1e6)
-            mut[name] = statistics.fmean(samples) if samples else None
+                finally:
+                    gc.enable()
+            mut[name] = statistics.median(samples) if samples else None
 
         rows.append(
             {
+                "stat": "read_only=mean, mutating=median",
                 "kv_frac": frac,
                 "kv_super_blocks": kv_sb,
                 "warm_pages_per_sb": warm,
