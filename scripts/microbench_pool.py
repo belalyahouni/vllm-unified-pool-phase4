@@ -232,7 +232,7 @@ def bench_cpu(args):
         m, bp = _build_state(h, M, F, layers, num_experts, kv_sb, warm)
         ro = {}
         for name, fn in (
-            ("kv_cost_sweep", lambda: [m._kv_super_block_cost(s) for s in range(1, M)]),
+            ("cheapest_kv_super_block", m._cheapest_kv_super_block),
             ("oldest_global_expert", m._oldest_global_expert),
             (
                 "coldest_prefix_page",
@@ -334,8 +334,8 @@ def print_cpu(out):
         f"\n== CPU selection logic (M={c['M']}, F={c['F']}, "
         f"{c['layers']} layers, {c['num_blocks']} blocks) =="
     )
-    names = ["kv_cost_sweep", "oldest_global_expert", "coldest_prefix_page",
-             "first_free_page"]
+    names = ["cheapest_kv_super_block", "oldest_global_expert",
+             "coldest_prefix_page", "first_free_page"]
     hdr = f"{'kv_frac':>8}{'kv_sb':>7}{'pfx_pg':>8}"
     for n in names:
         hdr += f"{n[:14]:>16}"

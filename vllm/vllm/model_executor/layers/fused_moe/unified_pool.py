@@ -911,10 +911,6 @@ class UnifiedPoolManager:
         self, layer: UnifiedPool, eid: int, needed_set: set[int]
     ) -> tuple[int, str]:
         """Tier 2: evict to make room for an expert miss."""
-        ns = self.num_super_blocks
-        blocks = self.block_pool.blocks
-        F = self.pages_per_super_block
-
         # Option A: this layer's coldest evictable expert (not needed
         # this forward, not pinned). Reusing its super-block only drops
         # this layer's mapping; other layers keep theirs.
@@ -930,24 +926,10 @@ class UnifiedPoolManager:
             own_expert_step = st
             break
 
-        # Option B: the vacatable KV super-block requiring the fewest
-        # relocations, then containing the fewest occupied pages. Recency
-        # breaks ties so equally costly choices preserve warmer prefixes.
-        best_kv_s: int | None = None
-        best_kv_step: int | None = None
-        best_kv_cost: tuple[int, int, int] | None = None
-        # O(num_super_blocks * num_blocks) per expert miss: each cost call
-        # scans the whole block array. Timed separately because it is the
-        # largest single CPU term in the miss path.
-        with PROFILER.cpu("kv_cost_sweep"):
-            for s in range(1, ns):
-                cost = self._kv_super_block_cost(s)
-                if cost is None:
-                    continue
-                if best_kv_cost is None or cost < best_kv_cost:
-                    best_kv_cost = cost
-                    best_kv_step = cost[2]
-                    best_kv_s = s
+        # Option B: the cheapest vacatable KV super-block, scored by its
+        # oldest page so the comparison below is oldest-expert vs
+        # oldest-KV.
+        best_kv_s, best_kv_step = self._cheapest_kv_super_block()
 
         cause = f"expert-L{layer.layer_idx}"
         target = self._adaptive_expert_target()
@@ -991,49 +973,53 @@ class UnifiedPoolManager:
             "--expert-cache-size, or increase --num-gpu-blocks-override."
         )
 
-    def _kv_super_block_cost(self, super_block_id: int) -> tuple[int, int, int] | None:
-        if self.super_block_holder.get(super_block_id):
-            return None
-        if self._any_layer_pins_super_block(super_block_id):
-            return None
+    @PROFILER.timed("cheapest_kv_super_block")
+    def _cheapest_kv_super_block(self) -> tuple[int | None, int | None]:
+        """The cheapest super-block to vacate for an expert, plus the KV
+        recency score to weigh against expert recency.
 
-        target_pages = list(self._pages_of(super_block_id))
-        if any(self.block_pool.blocks[p].ref_cnt > 0 for p in target_pages):
-            return None
-        target_steps = [
-            self.prefix_lru.get(p, -1)
-            for p in target_pages
-            if self.block_pool.blocks[p].block_hash is not None
-        ]
-        if not target_steps:
-            return None
+        Walks ``prefix_lru`` -- the cached-prefix pages that actually
+        exist -- once, tallying per super-block how many it holds and how
+        cold its oldest page is. Candidates are then tried cheapest-first,
+        where cheapest means "fewest pages to move", which is a proxy for
+        "fewest relocations".
 
-        free_holes = 0
-        external_steps: list[int] = []
-        for block in self.block_pool.blocks:
-            if block.is_null or block.ref_cnt > 0:
+        This replaced a sweep that computed the exact relocation plan for
+        every super-block, each pass rescanning the whole block array:
+        O(num_super_blocks * num_blocks), measured at 165 ms per miss at
+        95% KV occupancy. The proxy can pick a super-block needing an
+        extra page move, and a page move costs 0.116 ms -- so paying up to
+        a few extra moves is strictly better than spending 165 ms to avoid
+        them. See docs/MECHANISM_COST.md.
+
+        The returned score is the chosen super-block's *oldest* page, so
+        the caller compares oldest-expert against oldest-KV, matching the
+        mixed-LRU policy as described. The validity checks (not
+        expert-held, unpinned, no live page) are applied only to
+        candidates as they are tried, not to all of them up front.
+        """
+        counts: Counter[int] = Counter()
+        oldest: dict[int, int] = {}
+        for p, step in self.prefix_lru.items():
+            s = self._super_block_of_page(p)
+            counts[s] += 1
+            prev = oldest.get(s)
+            if prev is None or step < prev:
+                oldest[s] = step
+        if not counts:
+            return None, None
+
+        for s, _n in sorted(counts.items(), key=lambda kv: (kv[1], oldest[kv[0]])):
+            if s == 0:  # reserved: holds BlockPool's null page
                 continue
-            s = self._super_block_of_page(block.block_id)
-            if s == super_block_id or self.super_block_holder.get(s):
+            if self.super_block_holder.get(s):
                 continue
             if self._any_layer_pins_super_block(s):
                 continue
-            if block.block_hash is None:
-                free_holes += 1
-            else:
-                external_steps.append(self.prefix_lru.get(block.block_id, -1))
-
-        external_steps.sort()
-        relocations = 0
-        for step in sorted(target_steps, reverse=True):
-            if free_holes > 0:
-                free_holes -= 1
-                relocations += 1
-            elif external_steps and external_steps[0] < step:
-                external_steps.pop(0)
-                relocations += 1
-
-        return relocations, len(target_steps), max(target_steps)
+            if self._super_block_has_live_page(s):
+                continue
+            return s, oldest[s]
+        return None, None
 
     # KV-side victim selection (no layer of origin).
 
