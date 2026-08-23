@@ -32,6 +32,7 @@ timer with its nesting depth so a reader cannot accidentally double count.
 
 from __future__ import annotations
 
+import atexit
 import functools
 import json
 import os
@@ -70,6 +71,10 @@ _TIMER_DEPTH = {
 # Above this many unresolved CUDA event pairs, force a resolve so the
 # event pool cannot grow without bound on a long run.
 _MAX_PENDING_EVENTS = 4096
+
+# Rewrite the JSON report every this many forward steps (0 disables), so
+# a server stopped by a signal still leaves a usable report behind.
+_DUMP_EVERY = int(os.environ.get("VLLM_UNIFIED_POOL_PROF_EVERY", "2000"))
 
 
 class PoolProfiler:
@@ -229,25 +234,49 @@ class PoolProfiler:
         lines.append("UNIFIED PROF ==== end ====")
         return "\n".join(lines)
 
+    def write_json(self) -> None:
+        """Write the report to VLLM_UNIFIED_POOL_PROF_JSON, if set."""
+        path = os.environ.get("VLLM_UNIFIED_POOL_PROF_JSON")
+        if not path:
+            return
+        try:
+            payload = self.report()
+            payload["pid"] = os.getpid()
+            with open(path, "w") as f:
+                json.dump(payload, f, indent=2)
+        except OSError as e:
+            logger.warning("Could not write pool profile to %s: %s", path, e)
+
+    def maybe_periodic_dump(self, step: int) -> None:
+        """Rewrite the JSON every N steps.
+
+        The pool lives in the EngineCore process, which a harness
+        typically stops with a signal, so relying on a clean shutdown to
+        emit the report loses the whole run. Periodically overwriting the
+        file means a killed server still leaves usable data.
+        """
+        if not self.enabled or _DUMP_EVERY <= 0:
+            return
+        if step % _DUMP_EVERY:
+            return
+        self.write_json()
+
     def dump(self) -> None:
-        """Log the human-readable report and, if requested, write JSON."""
+        """Log the human-readable report and write JSON if requested."""
         if not self.enabled:
             return
         for line in self.format_report().splitlines():
             print(line, flush=True)
-        path = os.environ.get("VLLM_UNIFIED_POOL_PROF_JSON")
-        if path:
-            try:
-                with open(path, "w") as f:
-                    json.dump(self.report(), f, indent=2)
-                logger.info("UnifiedPool profile written to %s", path)
-            except OSError as e:
-                logger.warning("Could not write pool profile to %s: %s", path, e)
+        self.write_json()
 
 
 # Module-level singleton: the pool is a per-process object and the
 # profiler has to be reachable from both the manager and the layer.
 PROFILER = PoolProfiler(_PROFILE_ENABLED)
+
+if _PROFILE_ENABLED:
+    # Best-effort on a clean exit; maybe_periodic_dump covers the rest.
+    atexit.register(PROFILER.dump)
 
 
 def profiler_enabled() -> bool:

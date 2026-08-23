@@ -242,6 +242,49 @@ def test_max_pending_triggers_forced_drain(prof_on):
     )
 
 
+def test_periodic_dump_writes_on_interval_only(prof_on, tmp_path, monkeypatch):
+    """A signal-killed server must still leave a report behind."""
+    p = prof_on.PoolProfiler(enabled=True)
+    out = tmp_path / "periodic.json"
+    monkeypatch.setenv("VLLM_UNIFIED_POOL_PROF_JSON", str(out))
+    monkeypatch.setattr(prof_on, "_DUMP_EVERY", 10)
+
+    p.maybe_periodic_dump(7)
+    assert not out.exists()
+
+    p.count("total_steps", 10)
+    p.maybe_periodic_dump(10)
+    assert out.exists()
+
+    import json
+
+    assert json.loads(out.read_text())["counts"]["total_steps"] == 10
+
+
+def test_periodic_dump_disabled_by_zero(prof_on, tmp_path, monkeypatch):
+    p = prof_on.PoolProfiler(enabled=True)
+    out = tmp_path / "never.json"
+    monkeypatch.setenv("VLLM_UNIFIED_POOL_PROF_JSON", str(out))
+    monkeypatch.setattr(prof_on, "_DUMP_EVERY", 0)
+    p.maybe_periodic_dump(0)
+    assert not out.exists()
+
+
+def test_write_json_noop_without_env(prof_on, monkeypatch):
+    monkeypatch.delenv("VLLM_UNIFIED_POOL_PROF_JSON", raising=False)
+    prof_on.PoolProfiler(enabled=True).write_json()  # must not raise
+
+
+def test_write_json_records_pid(prof_on, tmp_path, monkeypatch):
+    p = prof_on.PoolProfiler(enabled=True)
+    out = tmp_path / "pid.json"
+    monkeypatch.setenv("VLLM_UNIFIED_POOL_PROF_JSON", str(out))
+    p.write_json()
+    import json
+
+    assert json.loads(out.read_text())["pid"] == os.getpid()
+
+
 def test_json_dump_written(prof_on, tmp_path):
     p = prof_on.PoolProfiler(enabled=True)
     p.count("x", 1)

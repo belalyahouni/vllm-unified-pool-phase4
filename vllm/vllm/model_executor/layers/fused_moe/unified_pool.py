@@ -842,6 +842,7 @@ class UnifiedPoolManager:
         # Opportunistic: resolves only event pairs the GPU has already
         # finished, so it never inserts a stall.
         PROFILER.drain()
+        PROFILER.maybe_periodic_dump(self.step)
 
     # Per-layer expert-miss super-block selection.
 
