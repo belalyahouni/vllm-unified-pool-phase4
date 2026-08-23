@@ -117,14 +117,17 @@ layers), exactly as expected.
 `tight_exp_reloc0` was killed mid-benchmark and is partial — do not
 compare it against `tight_exp_reloc1`.
 
-## 4. The fix (commit `bf9cd3a`)
+## 4. The fix (commits `bf9cd3a`, `3120431`)
 
 `_evict_for_expert` no longer scores every super-block. `_cheapest_kv_super_block`
-walks `prefix_lru` once — the pages that exist, not every block in the pool —
-tallying per super-block how many prefix pages it holds and how cold its
-oldest page is, then tries candidates cheapest-first ("fewest pages to
-move" as a proxy for "fewest relocations"), applying the validity checks
-only as each candidate is tried.
+walks `prefix_lru` once — the pages that exist, not every block in the
+pool — and ranks candidates by **fewest warm pages** (equivalently most
+cold pages, the rule the paper states), trying them cheapest-first and
+applying the validity checks only as each is tried. Warm means above the
+cold frontier: the step of the F-th coldest prefix page, mirroring
+`_vacate_kv_super_block`, which drops a page only when nothing colder
+exists to displace. At most F pages are ever cleared, so the frontier
+needs no tunable constant.
 
 Relocation is untouched: `_vacate_kv_super_block` and `_relocate_kv_page`
 still move warm pages into scattered holes and kill only the coldest.
@@ -133,33 +136,48 @@ Cost of one expert miss (`evict_for_expert`, µs, same pod, 20 reps):
 
 | KV frac | before | after | speedup |
 |---|---|---|---|
-| 0.00 | 831 | **21.9** | 38x |
-| 0.25 | 20,605 | **150.8** | 137x |
-| 0.50 | 62,875 | **296.1** | 212x |
-| 0.75 | 129,353 | **444.1** | 291x |
-| 0.95 | **197,211** | **550.3** | **358x** |
+| 0.00 | 831 | **21.5** | 39x |
+| 0.25 | 20,605 | **226.5** | 91x |
+| 0.50 | 62,875 | **376.8** | 167x |
+| 0.75 | 129,353 | **571.5** | 226x |
+| 0.95 | **197,211** | **734.6** | **268x** |
 
-The decision now costs ~0.55 ms against the 0.95 ms DMA it schedules,
+The decision now costs ~0.73 ms against the 0.95 ms DMA it schedules,
 instead of 197 ms — the right order of magnitude for scheduling a 12 MiB
 copy.
 
 Two deliberate consequences:
 
-* The proxy can pick a super-block needing an extra page move. A move is
-  0.116 ms, so up to ~1,700 extra moves would still beat one old planning
-  pass.
+* Ranking is by *risk to warm KV*, not copy count: a mostly-cold
+  super-block can cost an extra relocation, since cold pages are
+  preserved too when holes are available. The fuzzer sizes the trade at
+  651 relocations across 400 seeds vs 645 before — six extra page copies,
+  ~0.7 ms total — for never disturbing warm KV to save a copy.
 * The mixed-LRU score is now the chosen super-block's *oldest* page rather
   than its warmest, so the comparison is oldest-expert vs oldest-KV — what
   the Method section describes. The old warmest-page score made KV look
   warmer than it was and biased the decision toward evicting experts.
 
-Verified: the fuzzer passes 400 seeds with the **identical 645
-relocations**, deterministic regressions pass, 25 unit tests pass.
+Verified: fuzzer 400 seeds pass, deterministic regressions pass, 25 unit
+tests pass.
 
-Next remaining term is `vacate_kv_super_block` (25.5 ms at 95% KV), which
-is genuine work — per-page hole finding via `_first_free_page` and
-`_coldest_prefix_page` — rather than discarded planning. It only runs when
-KV actually loses the comparison.
+### Remaining: `vacate_kv_super_block` (29.9 ms at 95% KV)
+
+Same anti-pattern, not yet fixed. Per page of the super-block being
+cleared it does:
+
+1. `_coldest_prefix_page` — a full scan of all ~3024 prefix entries
+   (1,245 µs) whenever no free hole is available;
+2. `_relocate_kv_page` — which re-sorts the **entire** `prefix_lru`,
+   O(n log n), on every relocated page.
+
+Both are per-page recomputations of a global quantity. The re-sort looks
+like dead weight: every consumer (`_coldest_prefix_page`,
+`_pick_one_kv_victim`, `_cheapest_kv_super_block`) scans and compares step
+values explicitly rather than trusting order — `_coldest_prefix_page`'s
+own docstring says it does so "because relocation can leave order and step
+value out of sync". Hoisting the cold-page search to once per vacate and
+dropping the re-sort should take this well under 1 ms.
 
 ## 5. Consequences for the paper
 
