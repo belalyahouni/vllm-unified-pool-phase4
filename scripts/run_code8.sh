@@ -35,6 +35,9 @@ R=${R:-/root/code8_results}
 L=${L:-/root/code8_logs}
 FWD=${FWD:-/root/code8_fwd.jsonl}
 REV=${REV:-/root/code8_rev.jsonl}
+NUM=${NUM:-8}
+# Whitespace-separated whitelist of cell tags; empty runs all of them.
+CELLS=${CELLS:-}
 mkdir -p "$R" "$L"
 
 log(){ echo "[$(date +%H:%M:%S)] $*"; }
@@ -78,12 +81,13 @@ pass(){ local tag=$1 file=$2 which=$3
   timeout 3600 $BENCH --backend vllm --host 127.0.0.1 --port "$PORT" \
     --endpoint /v1/completions --model "$MODEL" --dataset-name custom \
     --dataset-path "$file" --disable-shuffle --skip-chat-template \
-    --custom-output-len 1 --num-prompts 8 --max-concurrency 1 --num-warmups 0 \
+    --custom-output-len 1 --num-prompts "$NUM" --max-concurrency 1 --num-warmups 0 \
     --seed 1 --save-detailed --result-filename "$R/${tag}_${which}.json" \
     --save-result --trust-remote-code > "$L/${tag}_${which}.log" 2>&1
   log "  $tag $which exit $?"; }
 
 cell(){ local tag=$1 flags=$2
+  if [ -n "$CELLS" ] && [[ " $CELLS " != *" $tag "* ]]; then return; fi
   if [ -f "$R/${tag}_replay.json" ]; then log "SKIP $tag (done)"; return; fi
   log "CELL $tag"
   gpu_clean
@@ -110,5 +114,9 @@ cell uni48_adapt "--expert-offload --expert-unified-pool $M67 --expert-cache-siz
 # restored to the warmest page (commit 25a42a4's anti-starvation bias).
 # uni48_noadapt scored by the oldest page and retained only 2/8 prefixes.
 cell uni48_kvprotect "--expert-offload --expert-unified-pool $M67 --expert-cache-size 48 --expert-working-set-window 0"
+# E1's original synthetic KV-heavy cell (16 distinct single-char prompts),
+# used as a control: if the mechanism retains prefixes here but not on real
+# code, the difference is the workload rather than the mechanism.
+cell uni8 "--expert-offload --expert-unified-pool $M67 --expert-cache-size 8 --expert-working-set-window 0"
 log "===== CODE8 DONE ====="
 echo CODE8_DONE
