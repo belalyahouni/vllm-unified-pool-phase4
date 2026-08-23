@@ -1,0 +1,43 @@
+{
+  "cpu": {
+    "ensure_loaded": {
+      "count": 65840,
+      "total_ms": 1633.554931730032,
+      "mean_us": 24.810980129556985,
+      "depth": 0
+    },
+    "pick_kv_victim": {
+      "count": 258,
+      "total_ms": 117.25344881415367,
+      "mean_us": 454.4707318378049,
+      "depth": 1
+    },
+    "select_kv_victim": {
+      "count": 258,
+      "total_ms": 118.02510544657707,
+      "mean_us": 457.46164901774057,
+      "depth": 0
+    },
+    "select_super_block": {
+      "count": 877,
+      "total_ms": 86.70634031295776,
+      "mean_us": 98.8669786920841,
+      "depth": 1
+    }
+  },
+  "gpu": {
+    "expert_dma_h2d": {
+      "count": 1005,
+      "total_ms": 957.8893767595291,
+      "mean_ms": 0.9531237579696807,
+      "total_mib": 12060.0,
+      "gib_per_s": 12.295097989124702
+    }
+  },
+  "counts": {
+    "kv_claim_truly-free": 258,
+    "miss_tier_free-cross-layer-expert": 821,
+    "miss_tier_free-pure": 56
+  },
+  "pid": 5988
+}

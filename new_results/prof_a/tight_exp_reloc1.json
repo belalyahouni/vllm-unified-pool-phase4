@@ -1,0 +1,63 @@
+{
+  "cpu": {
+    "ensure_loaded": {
+      "count": 65840,
+      "total_ms": 20624.4578063488,
+      "mean_us": 313.2511817489186,
+      "depth": 0
+    },
+    "evict_for_expert": {
+      "count": 143776,
+      "total_ms": 5454.311523586512,
+      "mean_us": 37.93617518630725,
+      "depth": 2
+    },
+    "kv_cost_sweep": {
+      "count": 143776,
+      "total_ms": 375.32706558704376,
+      "mean_us": 2.610498731269779,
+      "depth": 3
+    },
+    "oldest_global_expert": {
+      "count": 151,
+      "total_ms": 11.580418795347214,
+      "mean_us": 76.69151520097493,
+      "depth": 2
+    },
+    "pick_kv_victim": {
+      "count": 258,
+      "total_ms": 59.90658327937126,
+      "mean_us": 232.19605922236923,
+      "depth": 1
+    },
+    "select_kv_victim": {
+      "count": 258,
+      "total_ms": 60.62525138258934,
+      "mean_us": 234.98159450616023,
+      "depth": 0
+    },
+    "select_super_block": {
+      "count": 143792,
+      "total_ms": 5891.581695526838,
+      "mean_us": 40.97294491715004,
+      "depth": 1
+    }
+  },
+  "gpu": {
+    "expert_dma_h2d": {
+      "count": 144048,
+      "total_ms": 137182.61476433277,
+      "mean_ms": 0.9523396004410528,
+      "total_mib": 1728576.0,
+      "gib_per_s": 12.305221787031376
+    }
+  },
+  "counts": {
+    "kv_claim_kv-evicts-prefix": 151,
+    "kv_claim_truly-free": 107,
+    "miss_tier_expert-local": 143776,
+    "miss_tier_free-cross-layer-expert": 15,
+    "miss_tier_free-pure": 1
+  },
+  "pid": 6496
+}

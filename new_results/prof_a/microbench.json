@@ -1,0 +1,231 @@
+{
+  "args": {
+    "part": "both",
+    "expert_bytes": 12582912,
+    "pages_per_super_block": 96,
+    "layers": 16,
+    "super_blocks": 67,
+    "num_experts": 64,
+    "reps": 200,
+    "cpu_reps": 20,
+    "mut_reps": 5,
+    "warm_frac": 0.5,
+    "kv_fracs": [
+      0.0,
+      0.25,
+      0.5,
+      0.75,
+      0.95
+    ],
+    "f_sweep": [
+      1,
+      6,
+      24,
+      96,
+      384
+    ],
+    "json": "/root/microbench.json"
+  },
+  "gpu": {
+    "primitives": [
+      {
+        "op": "expert_h2d",
+        "n": 200,
+        "mean_ms": 0.9458884784579277,
+        "median_ms": 0.9456959962844849,
+        "p99_ms": 0.9466879963874817,
+        "bytes": 12582912,
+        "mib": 12.0,
+        "gib_per_s": 12.38914551438977
+      },
+      {
+        "op": "reloc_page",
+        "n": 200,
+        "mean_ms": 0.1160539198294282,
+        "median_ms": 0.10921599715948105,
+        "p99_ms": 0.19465599954128265,
+        "bytes": 2097152,
+        "mib": 2.0,
+        "gib_per_s": 16.829461709441883
+      },
+      {
+        "op": "reloc_fused",
+        "n": 200,
+        "mean_ms": 0.012183039980009198,
+        "median_ms": 0.012016000226140022,
+        "p99_ms": 0.01600000075995922,
+        "bytes": 2097152,
+        "mib": 2.0,
+        "gib_per_s": 160.315077616492
+      }
+    ],
+    "page_size_sweep": [
+      {
+        "op": "reloc_page_F1",
+        "n": 50,
+        "mean_ms": 1.727559039592743,
+        "median_ms": 1.7259359955787659,
+        "p99_ms": 1.754207968711853,
+        "bytes": 201326592,
+        "mib": 192.0,
+        "gib_per_s": 108.53464090246172,
+        "F": 1,
+        "page_kib": 12288.0
+      },
+      {
+        "op": "reloc_page_F6",
+        "n": 50,
+        "mean_ms": 0.26704384028911593,
+        "median_ms": 0.2672639936208725,
+        "p99_ms": 0.27292799949645996,
+        "bytes": 33554432,
+        "mib": 32.0,
+        "gib_per_s": 117.02198397898668,
+        "F": 6,
+        "page_kib": 2048.0
+      },
+      {
+        "op": "reloc_page_F24",
+        "n": 50,
+        "mean_ms": 0.10861952066421508,
+        "median_ms": 0.10784000158309937,
+        "p99_ms": 0.11823999881744385,
+        "bytes": 8388608,
+        "mib": 8.0,
+        "gib_per_s": 71.92537724550873,
+        "F": 24,
+        "page_kib": 512.0
+      },
+      {
+        "op": "reloc_page_F96",
+        "n": 50,
+        "mean_ms": 0.10820160016417503,
+        "median_ms": 0.107744000852108,
+        "p99_ms": 0.11564800143241882,
+        "bytes": 2097152,
+        "mib": 2.0,
+        "gib_per_s": 18.05079589429833,
+        "F": 96,
+        "page_kib": 128.0
+      },
+      {
+        "op": "reloc_page_F384",
+        "n": 50,
+        "mean_ms": 0.11034495994448662,
+        "median_ms": 0.10864000022411346,
+        "p99_ms": 0.14336000382900238,
+        "bytes": 524288,
+        "mib": 0.5,
+        "gib_per_s": 4.425043520298971,
+        "F": 384,
+        "page_kib": 32.0
+      }
+    ]
+  },
+  "cpu": {
+    "config": {
+      "M": 67,
+      "F": 96,
+      "layers": 16,
+      "num_experts": 64,
+      "num_blocks": 6432
+    },
+    "rows": [
+      {
+        "kv_frac": 0.0,
+        "kv_super_blocks": 1,
+        "warm_pages_per_sb": 48,
+        "prefix_pages": 48,
+        "expert_super_blocks": 64,
+        "read_only_us": {
+          "kv_cost_sweep": 613.0678579211235,
+          "oldest_global_expert": 106.19238018989563,
+          "coldest_prefix_page": 18.98687332868576,
+          "first_free_page": 8.741207420825958
+        },
+        "mutating_us": {
+          "vacate_kv_super_block": 476.5726625919342,
+          "select_kv_victim": 6.079673767089844,
+          "evict_for_expert": 830.8589458465576
+        },
+        "relocations_per_vacate": null
+      },
+      {
+        "kv_frac": 0.25,
+        "kv_super_blocks": 16,
+        "warm_pages_per_sb": 48,
+        "prefix_pages": 768,
+        "expert_super_blocks": 50,
+        "read_only_us": {
+          "kv_cost_sweep": 17020.037211477757,
+          "oldest_global_expert": 85.91432124376297,
+          "coldest_prefix_page": 299.9624237418175,
+          "first_free_page": 8.678250014781952
+        },
+        "mutating_us": {
+          "vacate_kv_super_block": 5052.9904663562775,
+          "select_kv_victim": 2.946704626083374,
+          "evict_for_expert": 20604.756474494934
+        },
+        "relocations_per_vacate": null
+      },
+      {
+        "kv_frac": 0.5,
+        "kv_super_blocks": 33,
+        "warm_pages_per_sb": 48,
+        "prefix_pages": 1584,
+        "expert_super_blocks": 33,
+        "read_only_us": {
+          "kv_cost_sweep": 53823.38147610426,
+          "oldest_global_expert": 56.0002401471138,
+          "coldest_prefix_page": 611.3268435001373,
+          "first_free_page": 8.703768253326416
+        },
+        "mutating_us": {
+          "vacate_kv_super_block": 9875.904023647308,
+          "select_kv_victim": 2.9258430004119873,
+          "evict_for_expert": 62874.68299269676
+        },
+        "relocations_per_vacate": null
+      },
+      {
+        "kv_frac": 0.75,
+        "kv_super_blocks": 50,
+        "warm_pages_per_sb": 48,
+        "prefix_pages": 2400,
+        "expert_super_blocks": 16,
+        "read_only_us": {
+          "kv_cost_sweep": 110157.05801546574,
+          "oldest_global_expert": 26.844628155231476,
+          "coldest_prefix_page": 919.5180609822273,
+          "first_free_page": 8.619017899036407
+        },
+        "mutating_us": {
+          "vacate_kv_super_block": 14518.977701663971,
+          "select_kv_victim": 4.376471042633057,
+          "evict_for_expert": 129352.45931148529
+        },
+        "relocations_per_vacate": null
+      },
+      {
+        "kv_frac": 0.95,
+        "kv_super_blocks": 63,
+        "warm_pages_per_sb": 48,
+        "prefix_pages": 3024,
+        "expert_super_blocks": 3,
+        "read_only_us": {
+          "kv_cost_sweep": 164557.29771405458,
+          "oldest_global_expert": 5.300343036651611,
+          "coldest_prefix_page": 1165.2126908302307,
+          "first_free_page": 8.838437497615814
+        },
+        "mutating_us": {
+          "vacate_kv_super_block": 36749.690026044846,
+          "select_kv_victim": 3.9465725421905518,
+          "evict_for_expert": 197211.20968461037
+        },
+        "relocations_per_vacate": null
+      }
+    ]
+  }
+}
