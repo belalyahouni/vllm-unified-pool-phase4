@@ -106,5 +106,9 @@ cell uni48_noadapt "--expert-offload --expert-unified-pool $M67 --expert-cache-s
 cell static48 "--expert-offload --expert-cache-size 48 --num-gpu-blocks-override 1824"
 # Unified with the adaptive target ON (the current default), for contrast.
 cell uni48_adapt "--expert-offload --expert-unified-pool $M67 --expert-cache-size 48"
+# Same unified configuration as uni48_noadapt, re-run with the KV score
+# restored to the warmest page (commit 25a42a4's anti-starvation bias).
+# uni48_noadapt scored by the oldest page and retained only 2/8 prefixes.
+cell uni48_kvprotect "--expert-offload --expert-unified-pool $M67 --expert-cache-size 48 --expert-working-set-window 0"
 log "===== CODE8 DONE ====="
 echo CODE8_DONE

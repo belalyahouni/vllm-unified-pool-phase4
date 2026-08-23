@@ -1270,8 +1270,23 @@ class UnifiedPoolManager:
         O(num_super_blocks * num_blocks), 197 ms per miss at 95% KV
         occupancy. See docs/MECHANISM_COST.md.
 
-        The returned score is the chosen super-block's *oldest* page, so
-        the caller compares oldest-expert against oldest-KV.
+        The returned score is the chosen super-block's *warmest* cached
+        page, restoring the deliberate asymmetry from commit 25a42a4
+        ("coldest-based expert eviction fix"), which exists to stop KV
+        starvation. Both sides of the mixed LRU are biased to protect KV:
+        the KV-allocation side scores an expert super-block by its
+        *coldest* holder (min), making experts easy to reclaim, and this
+        side scores a KV super-block by its *warmest* page (max), making KV
+        hard to reclaim. The bias is needed because the two recency clocks
+        run at different rates -- an expert is restamped on every forward
+        step, while a cached prefix page is only restamped when a request
+        finishes with it -- so raw timestamps make experts look
+        perpetually hotter than KV.
+
+        Scoring by the oldest page instead (which reads closer to the
+        paper's wording) removed that protection and cost prefix
+        retention: on the real-code workload, replay prefix hits fell from
+        8/8 to 2/8. See docs/MECHANISM_COST.md.
         """
         F = self.pages_per_super_block
         cold_count: Counter[int] = Counter()
@@ -1306,11 +1321,25 @@ class UnifiedPoolManager:
                     continue
                 if self._super_block_has_live_page(s):
                     continue
-                return s, oldest[s]
+                return s, self._warmest_prefix_step(s)
 
             if exhausted:
                 return None, None
             horizon = seen + F
+
+    def _warmest_prefix_step(self, super_block_id: int) -> int:
+        """Recency of the warmest cached page in the super-block.
+
+        O(F) dict lookups, needed because the candidate walk only sees the
+        cold end of the list and a super-block's warmest page can lie
+        beyond it.
+        """
+        warmest = -1
+        for p in self._pages_of(super_block_id):
+            step = self.prefix_lru.get(p)
+            if step is not None and step > warmest:
+                warmest = step
+        return warmest
 
     # KV-side victim selection (no layer of origin).
 
