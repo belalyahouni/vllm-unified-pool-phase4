@@ -35,6 +35,28 @@ _cuda.stream = lambda s: contextlib.nullcontext()
 _cuda.current_stream = lambda device=None: SimpleNamespace(wait_stream=lambda s: None)
 _cuda.synchronize = lambda device=None: None
 _cuda.Stream = lambda device=None: object()
+
+
+class _EventStub:
+    """Enough of torch.cuda.Event for the profiler to be fuzzed on CPU."""
+
+    def __init__(self, enable_timing=False):
+        self.enable_timing = enable_timing
+
+    def record(self, stream=None):
+        pass
+
+    def query(self):
+        return True
+
+    def synchronize(self):
+        pass
+
+    def elapsed_time(self, other):
+        return 1.0
+
+
+_cuda.Event = _EventStub
 torch_stub.cuda = _cuda
 sys.modules["torch"] = torch_stub
 sys.modules["torch.cuda"] = _cuda
@@ -51,6 +73,35 @@ sys.modules["vllm.logger"] = logger_mod
 
 # import the real module by path
 import importlib.util
+
+_FUSED_MOE_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "..",
+    "vllm",
+    "vllm",
+    "model_executor",
+    "layers",
+    "fused_moe",
+)
+
+# unified_pool imports the real profiler; load it by path too and register
+# it under the name the absolute import expects, so the fuzzer exercises
+# the genuine (disabled-by-default) profiler rather than a stub of it.
+_prof_spec = importlib.util.spec_from_file_location(
+    "vllm.model_executor.layers.fused_moe.pool_profiler",
+    os.path.join(_FUSED_MOE_DIR, "pool_profiler.py"),
+)
+_prof_mod = importlib.util.module_from_spec(_prof_spec)
+sys.modules[_prof_spec.name] = _prof_mod
+for _pkg in (
+    "vllm.model_executor",
+    "vllm.model_executor.layers",
+    "vllm.model_executor.layers.fused_moe",
+):
+    sys.modules.setdefault(_pkg, types.ModuleType(_pkg))
+_prof_spec.loader.exec_module(_prof_mod)
+sys.modules["vllm.model_executor.layers.fused_moe"].pool_profiler = _prof_mod
+PROFILER = _prof_mod.PROFILER
 
 UP_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),

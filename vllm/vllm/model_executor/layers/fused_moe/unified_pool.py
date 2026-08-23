@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING
 import torch
 
 from vllm.logger import init_logger
+from vllm.model_executor.layers.fused_moe.pool_profiler import PROFILER
 
 if TYPE_CHECKING:
     from vllm.v1.core.kv_cache_utils import KVCacheBlock
@@ -483,6 +484,7 @@ class UnifiedPoolManager:
                 flush=True,
             )
 
+    @PROFILER.timed("vacate_kv_super_block")
     def _vacate_kv_super_block(self, super_block_id: int, cause: str) -> None:
         """Clear all cached-prefix KV pages out of the super-block.
 
@@ -533,6 +535,7 @@ class UnifiedPoolManager:
                 # displace — so evict it in place.
                 self._evict_prefix_globally(p, cause=cause, tier="kv-vacate-evict")
 
+    @PROFILER.timed("first_free_page")
     def _first_free_page(self, exclude_super_block: int) -> int | None:
         """A pure-free page (no hash, super-block not expert-held, not
         pinned) outside ``exclude_super_block``, usable as a relocation
@@ -553,6 +556,7 @@ class UnifiedPoolManager:
             cursor = nxt
         return None
 
+    @PROFILER.timed("coldest_prefix_page")
     def _coldest_prefix_page(
         self, exclude_super_block: int, colder_than: int
     ) -> int | None:
@@ -579,6 +583,7 @@ class UnifiedPoolManager:
                 best_step = step
         return best_p
 
+    @PROFILER.timed("relocate_page")
     def _relocate_kv_page(self, src_id: int, dst_id: int) -> None:
         """Physically move a cached-prefix KV page from src to dst.
 
@@ -600,9 +605,11 @@ class UnifiedPoolManager:
         self.prefix_lru.pop(src_id, None)
         self.prefix_lru.pop(dst_id, None)
         self.prefix_lru[dst_id] = src_step
-        self.prefix_lru = OrderedDict(
-            sorted(self.prefix_lru.items(), key=lambda item: item[1])
-        )
+        # Full re-sort of every prefix entry on every relocated page.
+        with PROFILER.cpu("prefix_lru_resort"):
+            self.prefix_lru = OrderedDict(
+                sorted(self.prefix_lru.items(), key=lambda item: item[1])
+            )
         self.relocations += 1
         if _trace_enabled():
             print(
@@ -740,6 +747,7 @@ class UnifiedPoolManager:
 
     # Forward-path API.
 
+    @PROFILER.timed("ensure_loaded")
     def ensure_loaded(self, layer: UnifiedPool, needed_expert_ids: list[int]) -> None:
         """Make sure every needed expert is loaded at layer.
 
@@ -794,6 +802,7 @@ class UnifiedPoolManager:
                 self._add_holder(layer.layer_idx, super_block_id)
                 layer.pinned_super_blocks.add(super_block_id)
                 miss_assignments.append((eid, super_block_id, tier))
+                PROFILER.count(f"miss_tier_{tier}")
                 with torch.cuda.stream(self.transfer_stream):
                     self._dma_expert_into_super_block_async(layer, eid, super_block_id)
 
@@ -830,9 +839,13 @@ class UnifiedPoolManager:
 
     def end_forward_step(self) -> None:
         self.step += 1
+        # Opportunistic: resolves only event pairs the GPU has already
+        # finished, so it never inserts a stall.
+        PROFILER.drain()
 
     # Per-layer expert-miss super-block selection.
 
+    @PROFILER.timed("select_super_block")
     def _select_super_block_for_expert(
         self, layer: UnifiedPool, eid: int, needed_set: set[int]
     ) -> tuple[int, str]:
@@ -892,6 +905,7 @@ class UnifiedPoolManager:
 
         return self._evict_for_expert(layer, eid, needed_set)
 
+    @PROFILER.timed("evict_for_expert")
     def _evict_for_expert(
         self, layer: UnifiedPool, eid: int, needed_set: set[int]
     ) -> tuple[int, str]:
@@ -921,14 +935,18 @@ class UnifiedPoolManager:
         best_kv_s: int | None = None
         best_kv_step: int | None = None
         best_kv_cost: tuple[int, int, int] | None = None
-        for s in range(1, ns):
-            cost = self._kv_super_block_cost(s)
-            if cost is None:
-                continue
-            if best_kv_cost is None or cost < best_kv_cost:
-                best_kv_cost = cost
-                best_kv_step = cost[2]
-                best_kv_s = s
+        # O(num_super_blocks * num_blocks) per expert miss: each cost call
+        # scans the whole block array. Timed separately because it is the
+        # largest single CPU term in the miss path.
+        with PROFILER.cpu("kv_cost_sweep"):
+            for s in range(1, ns):
+                cost = self._kv_super_block_cost(s)
+                if cost is None:
+                    continue
+                if best_kv_cost is None or cost < best_kv_cost:
+                    best_kv_cost = cost
+                    best_kv_step = cost[2]
+                    best_kv_s = s
 
         cause = f"expert-L{layer.layer_idx}"
         target = self._adaptive_expert_target()
@@ -1018,6 +1036,7 @@ class UnifiedPoolManager:
 
     # KV-side victim selection (no layer of origin).
 
+    @PROFILER.timed("oldest_global_expert")
     def _oldest_global_expert(self) -> tuple[int | None, float | None]:
         """Super-block containing the globally coldest biased expert.
 
@@ -1046,6 +1065,7 @@ class UnifiedPoolManager:
                 best_s = s
         return best_s, best_step
 
+    @PROFILER.timed("select_kv_victim")
     def _select_kv_victim_blocks(self, num_blocks: int) -> list[KVCacheBlock]:
         """Pick num_blocks victim pages for KV allocation.
 
@@ -1067,6 +1087,7 @@ class UnifiedPoolManager:
         assert queue.num_free_blocks >= 0
         return ret
 
+    @PROFILER.timed("pick_kv_victim")
     def _pick_one_kv_victim(self) -> KVCacheBlock:
         """Pick one KV victim page and remove it from the free queue."""
         queue = self.block_pool.free_block_queue
@@ -1089,6 +1110,7 @@ class UnifiedPoolManager:
                 cursor = nxt
                 continue
             queue.remove(cursor)
+            PROFILER.count("kv_claim_truly-free")
             if _trace_enabled():
                 print(
                     f"UNIFIED KV_CLAIM page={block_id} tier=truly-free",
@@ -1158,6 +1180,7 @@ class UnifiedPoolManager:
         block = self.block_pool.blocks[block_id]
         self.block_pool.free_block_queue.remove(block)
         self.prefix_lru.pop(block_id, None)
+        PROFILER.count("kv_claim_kv-evicts-prefix")
         if _trace_enabled():
             print(
                 f"UNIFIED KV_CLAIM page={block_id} tier=kv-evicts-prefix",
@@ -1169,6 +1192,7 @@ class UnifiedPoolManager:
         """Evict the expert at super-block s (all layers) and return one of
         its pages, removed from the free queue. The other F-1 pages stay in
         the queue as free pages."""
+        PROFILER.count("kv_claim_kv-evicts-expert")
         self._broadcast_drop_all_layers(super_block_id, cause="kv-alloc-evict-expert")
         queue = self.block_pool.free_block_queue
         for p in self._pages_of(super_block_id):
@@ -1198,10 +1222,15 @@ class UnifiedPoolManager:
         page = self.page_size_bytes
         self.transfer_stream.wait_stream(torch.cuda.current_stream(self.device))
         with torch.cuda.stream(self.transfer_stream):
+            ev = PROFILER.gpu_start()
             for buffer in self.kv_pool_buffers.values():
                 dst_bytes = buffer.narrow(0, dst_id * page, page)
                 src_bytes = buffer.narrow(0, src_id * page, page)
                 dst_bytes.copy_(src_bytes, non_blocking=True)
+            # One page copied in every layer: this is the per-relocation
+            # cost the contiguity requirement forces us to pay.
+            PROFILER.gpu_end(ev, "reloc_d2d_page", page * len(self.kv_pool_buffers))
+            PROFILER.count("reloc_d2d_copies", len(self.kv_pool_buffers))
 
     def _dma_expert_into_super_block_async(
         self, layer: UnifiedPool, expert_id: int, super_block_id: int
@@ -1218,8 +1247,10 @@ class UnifiedPoolManager:
         w2_dst = layer.pool_buffer.narrow(
             0, sb_offset + layer.w13_bytes, layer.w2_bytes
         )
+        ev = PROFILER.gpu_start()
         w13_dst.copy_(layer._cpu_w13_bytes[expert_id], non_blocking=True)
         w2_dst.copy_(layer._cpu_w2_bytes[expert_id], non_blocking=True)
+        PROFILER.gpu_end(ev, "expert_dma_h2d", layer.expert_slot_bytes)
 
     def _dma_expert_into_super_block_sync(
         self, layer: UnifiedPool, expert_id: int, super_block_id: int
@@ -1334,3 +1365,9 @@ class UnifiedPoolManager:
     def shutdown_log(self) -> None:
         logger.info("UnifiedPool shutdown stats:")
         self.log_stats()
+        PROFILER.count("total_steps", self.step)
+        PROFILER.count("total_relocations", self.relocations)
+        for layer in self.layers.values():
+            PROFILER.count("total_expert_hits", layer.hits)
+            PROFILER.count("total_expert_misses", layer.misses)
+        PROFILER.dump()
