@@ -17,8 +17,8 @@ def load_module():
 
 
 TRACE = """\
-UNIFIED CACHE L0 step=100 F=96 expert_sb 40/67 ours (expert-ours-sb=40, expert-other-sb=2, prefix-pages=1200, alloc-kv-pages=1, pinned-sb=0, working-set=62, expert-target=47, hits=80, misses=20, ever-activated=64)
-UNIFIED CACHE L15 step=115 F=96 expert_sb 8/67 ours (expert-ours-sb=8, expert-other-sb=34, prefix-pages=1200, alloc-kv-pages=1, pinned-sb=0, working-set=32, expert-target=47, hits=95, misses=5, ever-activated=8)
+UNIFIED CACHE L0 step=100 F=96 expert_sb 40/67 ours (expert-ours-sb=40, expert-other-sb=2, prefix-pages=1200, alloc-kv-pages=1, pinned-sb=0, hits=80, misses=20, ever-activated=64)
+UNIFIED CACHE L15 step=115 F=96 expert_sb 8/67 ours (expert-ours-sb=8, expert-other-sb=34, prefix-pages=1200, alloc-kv-pages=1, pinned-sb=0, hits=95, misses=5, ever-activated=8)
 UNIFIED DECISION side=kv-alloc step=116 layer=all expert-score=70.000 kv-score=80.000 chosen=expert
 UNIFIED DECISION side=expert-miss step=117 layer=0 expert-score=72.000 kv-score=81.000 chosen=expert
 UNIFIED DECISION side=expert-miss step=118 layer=15 expert-score=100.000 kv-score=82.000 chosen=kv
@@ -34,9 +34,9 @@ class SummaryTests(unittest.TestCase):
             path.write_text(TRACE)
             report = module.summarize(path)
 
-        self.assertIn("## Per-layer bias outcomes", report)
-        self.assertIn("| L0 | 62 | 47 | 40 | 64 | 80 | 20 | 80.0% |", report)
-        self.assertIn("| L15 | 32 | 47 | 8 | 8 | 95 | 5 | 95.0% |", report)
+        self.assertIn("## Per-layer outcomes", report)
+        self.assertIn("| L0 | 40 | 64 | 80 | 20 | 80.0% | 1 |", report)
+        self.assertIn("| L15 | 8 | 8 | 95 | 5 | 95.0% | 0 |", report)
         self.assertIn("## Mixed-LRU decisions", report)
         self.assertIn("| `expert-miss` | `expert` | 1 |", report)
         self.assertIn("| `expert-miss` | `kv` | 1 |", report)

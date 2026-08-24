@@ -23,7 +23,7 @@ import os
 import random
 import sys
 import types
-from collections import Counter, OrderedDict, deque
+from collections import OrderedDict
 from types import SimpleNamespace
 
 # ---- stub torch + vllm.logger so unified_pool imports on a CPU box ----
@@ -358,9 +358,6 @@ def make_pool(layer_idx, num_experts, F, num_super_blocks, contents):
     p.expert_lru = OrderedDict()
     p.pinned_super_blocks = set()
     p.ever_activated = set()
-    p.working_set_window = 0
-    p.recent_expert_sets = deque()
-    p.recent_expert_counts = Counter()
     p.super_block_id_at = [UnifiedPool._UNLOADED] * num_experts
     p.hits = p.misses = p.forward_count = 0
     p.page_size_bytes = 8
@@ -420,58 +417,6 @@ def make_manager(block_pool, F, num_layers, num_experts):
 def test_manager_has_page_size():
     manager = make_manager(FakeBlockPool(8), 2, 1, 2)
     assert manager.page_size_bytes == 8
-
-
-def test_rolling_working_set_tracks_recent_experts():
-    pool = make_pool(0, 8, 1, 9, {})
-    pool.working_set_window = 3
-
-    pool.record_expert_accesses([0, 1])
-    pool.record_expert_accesses([1, 2])
-    pool.record_expert_accesses([2, 3])
-    assert pool.working_set_ready
-    assert pool.working_set_size == 4
-
-    pool.record_expert_accesses([3])
-    assert pool.working_set_size == 3
-
-
-def test_zero_window_disables_adaptive_target():
-    """A non-positive window must mean "off", not "target 0".
-
-    With window=0 nothing is recorded, so a length check against the
-    window reported ready with an empty window and produced a target of 0.
-    Since the footprint always meets a target of 0, every expert miss was
-    forced down the expert-local branch and the expert-vs-KV comparison
-    never ran -- which suppressed cross-type eviction entirely.
-    """
-    manager = make_manager(FakeBlockPool(8), 1, 2, 8)
-    for layer in manager.layers.values():
-        layer.working_set_window = 0
-        layer.record_expert_accesses([0, 1])
-        assert not layer.working_set_ready
-    assert manager._adaptive_expert_target() is None
-
-
-def test_adaptive_target_is_mean_working_set():
-    manager = make_manager(FakeBlockPool(8), 1, 2, 8)
-    for layer in manager.layers.values():
-        layer.working_set_window = 2
-    manager.layers[0].record_expert_accesses([0, 1, 2, 3])
-    manager.layers[0].record_expert_accesses([0, 1, 2, 3])
-    manager.layers[1].record_expert_accesses([0, 1])
-    manager.layers[1].record_expert_accesses([0, 1])
-
-    assert manager._adaptive_expert_target() == 3
-
-
-def test_equal_working_sets_keep_full_target():
-    manager = make_manager(FakeBlockPool(8), 1, 2, 8)
-    for layer in manager.layers.values():
-        layer.working_set_window = 1
-        layer.record_expert_accesses([0, 1, 2, 3, 4, 5])
-
-    assert manager._adaptive_expert_target() == 6
 
 
 def test_copy_page_covers_attention_only_layers():
@@ -659,42 +604,10 @@ def test_global_expert_uses_coldest_holder():
     assert (selected, step) == (1, 1)
 
 
-def test_kv_prefers_expert_while_footprint_exceeds_target():
-    block_pool = FakeBlockPool(4)
-    manager = make_manager(block_pool, 1, 2, 4)
-    for layer in manager.layers.values():
-        layer.working_set_window = 1
-        layer.record_expert_accesses([0])
-    manager.layers[0].assign(1, 0, 100)
-    manager.layers[0].assign(2, 1, 100)
-    manager._add_holder(0, 1)
-    manager._add_holder(0, 2)
-    add_prefix(manager, block_pool, 3, 103, 0)
-
-    assert manager._pick_one_kv_victim().block_id in (1, 2)
-
-
-def test_expert_miss_recycles_expert_at_target():
-    block_pool = FakeBlockPool(3)
-    manager = make_manager(block_pool, 1, 1, 3)
-    layer = manager.layers[0]
-    layer.working_set_window = 1
-    layer.record_expert_accesses([0])
-    layer.assign(1, 0, 100)
-    manager._add_holder(0, 1)
-    add_prefix(manager, block_pool, 2, 102, 0)
-
-    selected, tier = manager._evict_for_expert(layer, 1, {1})
-
-    assert (selected, tier) == (1, "expert-local")
-
-
-def test_trace_reports_working_set_target_and_mixed_decisions():
+def test_trace_reports_layer_state_and_mixed_decisions():
     block_pool = FakeBlockPool(3)
     manager = make_manager(block_pool, 1, 1, 2)
     layer = manager.layers[0]
-    layer.working_set_window = 1
-    layer.record_expert_accesses([0])
     layer.ever_activated.add(0)
     layer.hits = 3
     layer.misses = 1
@@ -708,13 +621,11 @@ def test_trace_reports_working_set_target_and_mixed_decisions():
     try:
         with contextlib.redirect_stdout(output):
             manager._trace_pre_mutation(layer, [0])
-            manager._adaptive_expert_target = lambda: None
             manager._pick_one_kv_victim()
     finally:
         up._TRACE_ENABLED = old_trace
 
     trace = output.getvalue()
-    assert "working-set=1, expert-target=1" in trace
     assert "hits=3, misses=1, ever-activated=1" in trace
     assert "UNIFIED DECISION side=kv-alloc" in trace
     assert "expert-score=100.000 kv-score=80.000 chosen=kv" in trace
@@ -750,13 +661,9 @@ def test_inactive_page_tokens_are_not_validated():
         expert_unified_pool=False,
         expert_offload=False,
         expert_pool_page_tokens=17,
-        expert_working_set_window=64,
     )
 
     assert offload.OffloadConfig.validate_offload_config(inactive) is inactive
-    assert any(
-        default == 64 and kwargs.get("ge") == 0 for default, kwargs in fields.values()
-    )
 
     active = SimpleNamespace(**vars(inactive))
     active.expert_unified_pool = True
@@ -771,10 +678,6 @@ def test_inactive_page_tokens_are_not_validated():
 
 def run_deterministic_tests():
     test_manager_has_page_size()
-    test_rolling_working_set_tracks_recent_experts()
-    test_zero_window_disables_adaptive_target()
-    test_adaptive_target_is_mean_working_set()
-    test_equal_working_sets_keep_full_target()
     test_copy_page_covers_attention_only_layers()
     test_copy_waits_for_prior_compute_writes()
     test_relocation_preserves_lru_recency()
@@ -784,9 +687,7 @@ def run_deterministic_tests():
     test_ensure_loaded_failure_clears_pins()
     test_dma_failure_removes_new_mappings()
     test_global_expert_uses_coldest_holder()
-    test_kv_prefers_expert_while_footprint_exceeds_target()
-    test_expert_miss_recycles_expert_at_target()
-    test_trace_reports_working_set_target_and_mixed_decisions()
+    test_trace_reports_layer_state_and_mixed_decisions()
     test_inactive_page_tokens_are_not_validated()
 
 

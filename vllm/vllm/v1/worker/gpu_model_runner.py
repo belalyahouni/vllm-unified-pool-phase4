@@ -6843,8 +6843,6 @@ class GPUModelRunner(
             kv_pool_buffers=kv_pool_buffers,
         )
 
-        working_set_window = self.vllm_config.offload_config.expert_working_set_window
-
         for moe_module, meta in zip(
             self._unified_pool_moe_modules, self._unified_pool_metas
         ):
@@ -6867,7 +6865,6 @@ class GPUModelRunner(
                 w13_bytes=self._unified_pool_w13_bytes,
                 w2_bytes=self._unified_pool_w2_bytes,
                 device=self.device,
-                working_set_window=working_set_window,
             )
             pool.manager = manager  # forward path needs the manager handle
             manager.register_layer(pool)
@@ -6899,11 +6896,10 @@ class GPUModelRunner(
         self._unified_pool_manager = manager
         logger.info(
             "UnifiedPool Stage 2 complete: %d layers, warm_count=%d, "
-            "num_gpu_blocks=%d, expert_working_set_window=%d",
+            "num_gpu_blocks=%d",
             num_moe_layers,
             warm_count,
             block_pool.num_gpu_blocks,
-            working_set_window,
         )
         return block_pool.num_gpu_blocks
 

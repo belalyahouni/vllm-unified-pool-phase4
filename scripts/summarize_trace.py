@@ -30,8 +30,7 @@ RE_CACHE = re.compile(
     r"expert_sb (?P<eo>\d+)/(?P<cap>\d+) ours "
     r"\(expert-ours-sb=(?P<eo2>\d+), expert-other-sb=(?P<ex>\d+), "
     r"prefix-pages=(?P<pf>\d+), alloc-kv-pages=(?P<kv>\d+), "
-    r"pinned-sb=(?P<pn>\d+), working-set=(?P<working>\d+), "
-    r"expert-target=(?P<target>pending|\d+), "
+    r"pinned-sb=(?P<pn>\d+), "
     r"hits=(?P<hits>\d+), misses=(?P<misses>\d+), "
     r"ever-activated=(?P<activated>\d+)\)"
 )
@@ -119,8 +118,6 @@ def summarize(path: Path) -> str:
                 last_cache_per_layer[layer] = {
                     "step": int(m["step"]),
                     "cap": int(m["cap"]),
-                    "working_set": int(m["working"]),
-                    "target": m["target"],
                     "expert_ours": int(m["eo"]),
                     "expert_other": int(m["ex"]),
                     "prefix": int(m["pf"]),
@@ -190,18 +187,17 @@ def summarize(path: Path) -> str:
             lines.append(f"- {tok}")
 
     lines.append("")
-    lines.append("## Per-layer bias outcomes")
+    lines.append("## Per-layer outcomes")
     lines.append("")
     lines.append(
-        "| Layer | working set | target | resident experts | activated | hits | misses | hit rate | evictions |"
+        "| Layer | resident experts | activated | hits | misses | hit rate | evictions |"
     )
-    lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|")
+    lines.append("|---|---:|---:|---:|---:|---:|---:|")
     for layer in sorted(last_cache_per_layer):
         data = last_cache_per_layer[layer]
         total = data["hits"] + data["misses"]
         lines.append(
-            f"| L{layer} | {data['working_set']} | {data['target']} | "
-            f"{data['expert_ours']} | "
+            f"| L{layer} | {data['expert_ours']} | "
             f"{data['activated']} | {data['hits']} | {data['misses']} | "
             f"{fmt_pct(data['hits'], total)} | {expert_evict_count_per_layer[layer]} |"
         )

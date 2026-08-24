@@ -105,21 +105,16 @@ cell(){ local tag=$1 flags=$2
 M67="--num-gpu-blocks-override 6432 --expert-pool-page-tokens 16"
 
 log "===== CODE8 START ===== (NUM=$NUM KVSCORE=$KVSCORE)"
-# Unified with the adaptive target OFF. The handoff's best unified numbers
-# came from this configuration, and its own conclusion was that the
-# adaptive target "should not be treated as the solution".
-cell uni48_noadapt "--expert-offload --expert-unified-pool $M67 --expert-cache-size 48 --expert-working-set-window 0"
+# The unified pool as the paper describes it: a plain dual LRU comparing
+# expert recency against KV prefix recency. (The adaptive expert target
+# that used to be togglable here has been removed from the tree; the two
+# cells that differed only by that flag are gone with it.)
+cell uni48 "--expert-offload --expert-unified-pool $M67 --expert-cache-size 48"
 # Static C=48: the tuned oracle for this stationary workload.
 cell static48 "--expert-offload --expert-cache-size 48 --num-gpu-blocks-override 1824"
-# Unified with the adaptive target ON (the current default), for contrast.
-cell uni48_adapt "--expert-offload --expert-unified-pool $M67 --expert-cache-size 48"
-# Same unified configuration as uni48_noadapt, re-run with the KV score
-# restored to the warmest page (commit 25a42a4's anti-starvation bias).
-# uni48_noadapt scored by the oldest page and retained only 2/8 prefixes.
-cell uni48_kvprotect "--expert-offload --expert-unified-pool $M67 --expert-cache-size 48 --expert-working-set-window 0"
 # E1's original synthetic KV-heavy cell (16 distinct single-char prompts),
 # used as a control: if the mechanism retains prefixes here but not on real
 # code, the difference is the workload rather than the mechanism.
-cell uni8 "--expert-offload --expert-unified-pool $M67 --expert-cache-size 8 --expert-working-set-window 0"
+cell uni8 "--expert-offload --expert-unified-pool $M67 --expert-cache-size 8"
 log "===== CODE8 DONE ====="
 echo CODE8_DONE

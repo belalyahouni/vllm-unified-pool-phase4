@@ -33,7 +33,7 @@ call. No staging tensor, no extra GPU memory beyond the pool itself.
 from __future__ import annotations
 
 import os
-from collections import Counter, OrderedDict, deque
+from collections import Counter, OrderedDict
 from typing import TYPE_CHECKING
 
 import torch
@@ -335,7 +335,6 @@ class UnifiedPool:
         w13_bytes: int,
         w2_bytes: int,
         device: torch.device,
-        working_set_window: int,
     ) -> None:
         self.layer_idx = layer_idx
         self.num_experts = num_experts
@@ -347,7 +346,6 @@ class UnifiedPool:
         self.w13_bytes = w13_bytes
         self.w2_bytes = w2_bytes
         self.device = device
-        self.working_set_window = working_set_window
 
         # One expert spans F contiguous pages (a super-block). Phase 3
         # is F == 1.
@@ -433,8 +431,6 @@ class UnifiedPool:
         # DIAGNOSTIC: every expert id the workload has ever routed to this
         # layer (the genuine footprint), vs what is merely resident.
         self.ever_activated: set[int] = set()
-        self.recent_expert_sets: deque[set[int]] = deque()
-        self.recent_expert_counts: Counter[int] = Counter()
 
         self.hits = 0
         self.misses = 0
@@ -485,32 +481,6 @@ class UnifiedPool:
         if expert_id in self.expert_lru:
             self.expert_lru[expert_id] = step
             self.expert_lru.move_to_end(expert_id, last=True)
-
-    def record_expert_accesses(self, expert_ids: list[int]) -> None:
-        if self.working_set_window <= 0:
-            return
-        expert_set = set(expert_ids)
-        self.recent_expert_sets.append(expert_set)
-        self.recent_expert_counts.update(expert_set)
-        if len(self.recent_expert_sets) > self.working_set_window:
-            self.recent_expert_counts.subtract(self.recent_expert_sets.popleft())
-            self.recent_expert_counts += Counter()
-
-    @property
-    def working_set_ready(self) -> bool:
-        # A non-positive window disables working-set tracking, so it is
-        # never "ready". Without this, window=0 reported ready with an
-        # empty window, giving an expert target of 0 -- and since the
-        # footprint always meets a target of 0, every miss was forced down
-        # the expert-local branch and the expert-vs-KV comparison never
-        # ran. The off switch was the most aggressive setting.
-        if self.working_set_window <= 0:
-            return False
-        return len(self.recent_expert_sets) == self.working_set_window
-
-    @property
-    def working_set_size(self) -> int:
-        return len(self.recent_expert_counts)
 
 
 class UnifiedPoolManager:
@@ -587,17 +557,6 @@ class UnifiedPoolManager:
         assert layer.pages_per_super_block == self.pages_per_super_block
         assert layer.num_super_blocks == self.num_super_blocks
         self.layers[layer.layer_idx] = layer
-
-    def _adaptive_expert_target(self) -> int | None:
-        if not self.layers or not all(
-            layer.working_set_ready for layer in self.layers.values()
-        ):
-            return None
-        total = sum(layer.working_set_size for layer in self.layers.values())
-        return (total + len(self.layers) - 1) // len(self.layers)
-
-    def _expert_footprint(self) -> int:
-        return len(self.super_block_holder)
 
     # Super-block <-> page helpers.
 
@@ -1048,7 +1007,6 @@ class UnifiedPoolManager:
         miss_eids: list[int] = []
         needed_set = set(needed_expert_ids)
         layer.ever_activated.update(needed_set)  # DIAGNOSTIC: genuine footprint
-        layer.record_expert_accesses(needed_expert_ids)
         if _trace_enabled():
             print(
                 f"UNIFIED NEEDED L{layer.layer_idx} experts={sorted(needed_set)}",
@@ -1234,12 +1192,6 @@ class UnifiedPoolManager:
         best_kv_s, best_kv_step = self._cheapest_kv_super_block()
 
         cause = f"expert-L{layer.layer_idx}"
-        target = self._adaptive_expert_target()
-        footprint_at_target = target is not None and self._expert_footprint() >= target
-        if own_expert_eid is not None and footprint_at_target:
-            s2 = layer.super_block_at_expert[own_expert_eid]
-            self._drop_layer_mapping(layer, s2, cause=cause, tier="expert-local")
-            return s2, "expert-local"
         # Choose the colder option. Prefix wins ties (matches Phase 3).
         if own_expert_eid is not None and best_kv_s is not None:
             assert own_expert_step is not None
@@ -1471,14 +1423,6 @@ class UnifiedPoolManager:
             oldest_prefix_step = step
             break
 
-        target = self._adaptive_expert_target()
-        if (
-            oldest_expert_s is not None
-            and target is not None
-            and self._expert_footprint() > target
-        ):
-            return self._kv_take_page_evicting_expert(oldest_expert_s)
-
         # Expert wins ties on the KV side (matches Phase 3's bias).
         if oldest_expert_s is not None and oldest_prefix_bid is not None:
             assert oldest_expert_step is not None
@@ -1625,8 +1569,6 @@ class UnifiedPoolManager:
             if b.block_hash is not None and b.block_id not in self.prefix_lru
         )
         n_pinned_sb = len(layer.pinned_super_blocks)
-        expert_target = self._adaptive_expert_target()
-        target_str = "pending" if expert_target is None else str(expert_target)
 
         # Required at level 1 for the dissertation overlay figure.
         print(
@@ -1635,8 +1577,7 @@ class UnifiedPoolManager:
             f"expert_sb {n_expert_ours}/{capacity_sb} ours "
             f"(expert-ours-sb={n_expert_ours}, expert-other-sb={n_expert_other}, "
             f"prefix-pages={n_prefix_pages}, alloc-kv-pages={n_alloc_kv_pages}, "
-            f"pinned-sb={n_pinned_sb}, working-set={layer.working_set_size}, "
-            f"expert-target={target_str}, "
+            f"pinned-sb={n_pinned_sb}, "
             f"hits={layer.hits}, misses={layer.misses}, "
             f"ever-activated={len(layer.ever_activated)})",
             flush=True,
@@ -1692,14 +1633,13 @@ class UnifiedPoolManager:
             num_expert_super_blocks = len(layer.expert_at_super_block)
             logger.info(
                 "UnifiedPool L%d: hits=%d misses=%d hit_rate=%.1f%% "
-                "expert_super_blocks=%d kv_prefix_pages=%d working_set=%d",
+                "expert_super_blocks=%d kv_prefix_pages=%d",
                 layer.layer_idx,
                 layer.hits,
                 layer.misses,
                 hit_rate,
                 num_expert_super_blocks,
                 num_kv_prefix,
-                layer.working_set_size,
             )
 
     def shutdown_log(self) -> None:

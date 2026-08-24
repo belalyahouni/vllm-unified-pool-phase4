@@ -127,11 +127,6 @@ class OffloadConfig:
     default of 16 is the finest granularity the kernel allows. Only
     meaningful together with --expert-unified-pool."""
 
-    expert_working_set_window: int = Field(default=64, ge=0)
-    """Number of recent forwards used to estimate each layer's expert
-    working set. 0 disables adaptive targeting. Only meaningful with
-    --expert-unified-pool."""
-
     @model_validator(mode="after")
     def validate_offload_config(self) -> "OffloadConfig":
         """Validate offload configuration constraints."""
