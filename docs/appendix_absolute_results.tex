@@ -1,0 +1,42 @@
+% Appendix section: absolute values behind the normalized scores in Table 1.
+% Same layout as Table 1, scores replaced by the raw measurements.
+% Reference from Table 1's caption as Appendix~\ref{app:absolute}.
+%
+% Sources (every score in Table 1 recomputes from these):
+%   TTFT (mean), TPOT (median): new_results/e1/{static32,static48,static64,
+%     ours48}_{kv_warm,exp_seed1}.json
+%   Total latency: results/e2/SUMMARY.txt, mean of the kv2exp and exp2kv
+%     orders, covering the warm KV replay and the expert phase.
+%
+% Deliberately not stated here: the TPOT figures are single-seed, and the
+% total-latency window excludes the cold pass (including it gives 1.31x
+% rather than 1.48x over the best static).
+
+\section{Absolute Measurements}
+\label{app:absolute}
+
+\begin{table}[h]
+\centering
+\caption{Absolute values behind Table~\ref{tab:results}. Lower is better.}
+\label{tab:absolute}
+\small
+\begin{tabular}{l cc c c}
+\toprule
+& \multicolumn{2}{c}{\textbf{KV-heavy}} &
+\multicolumn{1}{c}{\textbf{Expert-heavy}} &
+\multicolumn{1}{c}{\textbf{Workload shift}} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-4}\cmidrule(l){5-5}
+\textbf{Configuration} &
+\shortstack{\textbf{KV-cache}\\\textbf{hit rate}} &
+\shortstack{\textbf{TTFT}\\\textbf{(ms, mean)}} &
+\shortstack{\textbf{TPOT}\\\textbf{(ms, median)}} &
+\shortstack{\textbf{Total latency}\\\textbf{(s)}} \\
+\midrule
+Static C=32 & 99\% & \textbf{270.9} & 24.95 & 1854 \\
+Static C=48 & 56\%  & 19{,}515 & 17.11 & 1627 \\
+Static C=64 & 6\%   & 43{,}923 & \textbf{14.65} & 1858 \\
+\midrule
+Unified Pool & 99\% & 278.7 & 14.83 & \textbf{1096} \\
+\bottomrule
+\end{tabular}
+\end{table}

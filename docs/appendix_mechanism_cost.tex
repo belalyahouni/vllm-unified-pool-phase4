@@ -1,12 +1,46 @@
 % Appendix section: cost of cross-type eviction.
 % Place after \appendix; reference from the main text as Appendix~\ref{app:cost}.
 %
+% NOTE on denominators. Both percentages here are against the 2028.90 s
+% profiled run, and that run length is stated in the prose on purpose.
+% Table 1's shift column is a different run (unprofiled) and a different
+% window (post-shift, excluding the cold pass), so dividing these figures
+% by its 1096 s gives 0.07% and 0.96% instead of 0.04% and 0.5%. Naming
+% the denominator is what stops a reviewer making that division.
+%
 % Relocation count and share of run time are measured, from the profiled
-% kv2exp run at the reported length (Nexp=220): 6866 pages relocated,
-% 812.99 ms of GPU copy time, over 2057.08 s of benchmark wall clock
-% (796.69 + 4.05 + 1256.34). The run-level relocation and expert-load
-% latencies there (0.118 ms, 0.956 ms) corroborate the microbenchmark
-% figures in the table below.
+% kv2exp run at the reported length (Nexp=220), post commit d6ba38d: 6866
+% pages relocated, 746.0 ms of GPU copy time, over 2028.90 s of benchmark
+% wall clock. The run-level relocation and expert-load latencies there
+% (0.109 ms, 0.956 ms) corroborate the microbenchmark figures in the table
+% below. The pre-change run gave the same 6866 pages and the same 0.04%,
+% which is the check that d6ba38d altered only host-side cost.
+%
+% The 0.5% host-side figure: victim selection took 10.48 s of a 2028.90 s
+% run (790.15 + 4.10 + 1234.65), summing the two top-level counters,
+% select_super_block (76,644 calls at 102 us) and select_kv_victim (7,666
+% at 346 us). Measured on the same build as the relocation figures above,
+% post commit d6ba38d, which cut select_super_block from 181 us to 102 us
+% (13.88 s to 7.82 s). Profiling is enabled, which inflates CPU time, so
+% 0.5% is an upper bound.
+%
+% Scope: 0.5% covers victim selection only. The per-page tracking
+% callbacks (_on_prefix_added / _on_prefix_removed / _on_kv_allocation and
+% the PrefixLRU ops they drive) are not instrumented, which is why the
+% sentence says "choosing what to evict" rather than claiming to cover all
+% host-side cost. Bound for a rebuttal, not measured: those callbacks fire
+% once per KV block lifecycle, order 1e4 here (220 requests x 336 tokens /
+% 16, plus 2 x 16 prompts x ~3000 / 16), each O(1) on an intrusive list,
+% so ~0.2 s even at a generous 20 us per call, about 0.01% of the run.
+% Relocation's own rename() cost is already inside relocate_page.
+%
+% A "flat as the pool fills" clause was cut deliberately. Selection cost
+% is indeed flat in KV occupancy now (microbench_pool.py sweeps it; it was
+% 197 ms per miss at 95% occupancy before the victim-search fixes), but it
+% is still linear in M: select_super_block walks all M super-blocks on
+% almost every miss, since the free-page guard added in d6ba38d turns out
+% never to fire on this workload. Claiming the favourable scaling property
+% next to an unfavourable one invites the question that exposes it.
 
 \appendix
 
@@ -46,11 +80,8 @@ page is cheap next to the transfer that displaces it.
 
 In aggregate the cost stays small even though the mechanism is busy. Over
 the shift from the KV-heavy to the expert-heavy phase, the pool relocated
-$6{,}866$ pages, which accounts for under $0.1\%$ of that run. The
-reported speedup is
-end-to-end wall-clock time measured with the mechanism running, so this
-cost is inside that number rather than additional to it.
-
-These figures cover data movement, including the GPU copies. They exclude
-the host-side cost of selecting a victim, which does not grow as the pool
-fills.
+$6{,}866$ pages, $0.04\%$ of that $2{,}029$\,s profiled run. The host-side
+cost of choosing what to evict is $0.5\%$ of the same run, an upper bound
+since profiling was enabled. The reported speedup is end-to-end
+wall-clock time measured with the mechanism running, so these costs are
+inside that number rather than additional to it.

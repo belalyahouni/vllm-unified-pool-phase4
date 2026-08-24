@@ -1,0 +1,18 @@
+[10:50:57] gathered already-run: exp static64, exp ours48, kv static32, kv ours48
+[10:50:57] ===== NEW E1 START (post-fix, trace-off, seed1; 4 new cells) =====
+[10:50:57] CELL static32 / expert-heavy
+[10:51:33]   boot ready (19x2s)
+[10:53:23]   static32 exp-seed1 exit 0
+[10:53:28] CELL static48 / expert-heavy
+[10:54:04]   boot ready (19x2s)
+[10:55:22]   static48 exp-seed1 exit 0
+[10:55:27] CELL static48 / kv-heavy
+[10:56:03]   boot ready (19x2s)
+[11:08:55]   static48 kv-cold exit 0
+[11:14:13]   static48 kv-warm exit 0
+[11:14:18] CELL static64 / kv-heavy
+[11:14:54]   boot ready (19x2s)
+[11:28:00]   static64 kv-cold exit 0
+[11:39:49]   static64 kv-warm exit 0
+[11:39:54] ===== NEW E1 DONE =====
+NEW_E1_ALL_DONE
